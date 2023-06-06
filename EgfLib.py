@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import glob
 import json
-from scipy.signal import butter, sosfilt, minimum_phase, firls, hilbert
+from scipy.signal import hilbert, find_peaks
 from scipy.special import expit
 import multiprocessing
 
@@ -302,13 +302,88 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     c_T_array = np.zeros((len(c_array_interp),len(central_periods)))
     #
     # Generate t-T array and c-T array
-    if __name__=="__main__":
+    if threads != 1 and __name__=="__main__":
         procs = []
-        pool = multiprocessing.Pool(threads)
+        with multiprocessing.Pool(threads) as pool:
+            for i in range(len(central_periods)):
+                p = pool.apply_async(filter_worker, args=(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group))
+                procs.append(p)
+            for p in procs:
+                i, c_array,wave_filtered = p.get()
+                c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
+            pool.join()
+            pool.close()
+    else:
         for i in range(len(central_periods)):
-            p = pool.apply_async(filter_worker, args=(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group))
-            procs.append(p)
-        for p in procs:
-            i, c_array,wave_filtered = p.get()
+            i, c_array,wave_filtered = filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group)
             c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
     return central_periods, tt, c_array_interp, c_T_array
+
+#######################################################################################################
+#                                            Reional FTAN                                             #
+#######################################################################################################
+
+def define_peaks(c_T):
+    c_len, T_len = c_T.shape
+    c_T_out = np.zeros(c_T.shape)
+    for i in range(T_len):
+        inds, prop = find_peaks(c_T[:,i])
+        c_T_out[inds,i] = 1
+    return c_T_out
+
+def regional_dispersion_worker(egf_path,distance,fSettings,vel_type,wave_num):
+    egf_trace = obspy.read(egf_path)
+    if vel_type == "group":
+        do_group = True
+    else:
+        do_group = False
+    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,do_group=do_group)
+    #
+    c_T_array = define_peaks(c_T_array)
+    c_T_out = np.zeros((c_T_array.shape[0],c_T_array.shape[1],2))
+    for i in range(len(c)):
+        for j in range(len(T)):
+            if c[i]*1000*T[j] <= distance/wave_num:
+                c_T_out[i,j,0] = float(c_T_array[i,j])
+                c_T_out[i,j,1] = 1
+            else:
+                c_T_out[i,j,0] = 0
+                c_T_out[i,j,1] = 0
+    return c_T_out
+
+def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wave_num=2):
+    """
+    
+    """
+    minT = fSettings[0]
+    maxT = fSettings[1]
+    dT = fSettings[2]
+    dv = fSettings[5]
+    minv = fSettings[6]
+    maxv = fSettings[7]
+    T = np.arange(minT,maxT,dT)
+    c = np.arange(minv,maxv+dv,dv)
+    c_T_shape = (len(c),len(T))
+    c_T_regional = np.zeros(c_T_shape)
+    ones_sum = np.zeros(c_T_shape)
+    #
+    if __name__=="__main__":
+        with multiprocessing.Pool(threads) as pool:
+            procs = []
+            for i in range(len(egf_pathlist)):
+                egf_path = egf_pathlist[i]
+                distance = distance_list[i]
+                p = pool.apply_async(regional_dispersion_worker,args=(egf_path,distance,fSettings,vel_type,wave_num))
+                procs.append(p)
+            for p in procs:
+                c_T_array = p.get()
+                c_T_regional = c_T_regional+c_T_array[:,:,0]
+                ones_sum = ones_sum+c_T_array[:,:,1]
+            pool.join()
+            pool.close()
+    for i in range(c_T_array.shape[0]):
+        for j in range(c_T_array.shape[1]):
+            if ones_sum[i,j] != 0:
+                c_T_regional[i,j] = c_T_regional[i,j]/ones_sum[i,j]
+    return c, T, c_T_regional
+
