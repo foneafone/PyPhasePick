@@ -1,5 +1,7 @@
 import numpy as np
+import xarray as xr
 import obspy
+import obspy.geodetics.base
 import time
 import matplotlib.pyplot as plt
 import os
@@ -13,9 +15,9 @@ from EgfLib import FTAN, make_c_T_lists, peak_array, find_closest_v2, conect_poi
 #                             Settings                                #
 #######################################################################
 
-egf_dir = ""
+egf_dir = "/raid3/jwf39/borneo_cc/EGF/pws/ZZ"
 
-station_file = ""
+station_file = "./station_loc.json"
 
 regional_curve_file = "./regional_dispersion.txt"
 
@@ -23,7 +25,7 @@ regional_curve_file = "./regional_dispersion.txt"
 #Period Axis
 minT = 1
 maxT = 60
-dT = 0.25
+dT = 0.1
 #Velocity Axis
 dv = 0.01
 minv = 1.5
@@ -45,26 +47,35 @@ showEndFigure = True
 #                               Main                                  #
 #######################################################################
 
-station_pairs = np.load(disp_to_do)
 
-station_loc = {}
-stations = np.loadtxt(station_file,usecols=(0),dtype=str,unpack=True)
-lats, lons = np.loadtxt(station_file,usecols=(1,2),unpack=True)
-for station,lat,lon in zip(stations,lats,lons):
-    station_loc[station] = (lat,lon)
+# station_pairs = np.load(disp_to_do)
+station_pairs = ["MY_SRM_YC_SBF4"]
+
+# station_loc = {}
+# stations = np.loadtxt(station_file,usecols=(0),dtype=str,unpack=True)
+# lats, lons = np.loadtxt(station_file,usecols=(1,2),unpack=True)
+# for station,lat,lon in zip(stations,lats,lons):
+#     station_loc[station] = (lat,lon)
+f = open(station_file,"r")
+station_loc = json.load(f)
+f.close()
 
 egf_pathlist = []
 distance_list = []
 for station_pair in station_pairs:
-    station1, station2 = station_pair.split("_")
+    # station1, station2 = station_pair.split("_")
+    net1, sta1, net2, sta2 = station_pair.split("_")
+    station1 = f"{net1}_{sta1}"; station2 = f"{net2}_{sta2}"
     lat1, lon1 = station_loc[station1]
     lat2, lon2 = station_loc[station2]
     dist, azab, azbc = obspy.geodetics.base.gps2dist_azimuth(lat1,lon1,lat2,lon2)
     #
-    egf_path = f"{egf_dir}/{station_pair}.mseed"
+    egf_path = f"{egf_dir}/{station_pair}.MSEED"
     #
     egf_pathlist.append(egf_path)
     distance_list.append(dist)
+
+regional_period, regional_phasevel = np.loadtxt(regional_curve_file,unpack=True)
 
 try:
     f = open(disp_done,"r")
@@ -82,7 +93,18 @@ try:
                 vel_type = "phase"
                 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ FTAN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~# 
                 egf_trace = obspy.read(egf_path)
+                egf_trace = egf_trace[0]
                 T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=False)
+                #
+                ftn = xr.DataArray(
+                    data=c_T_array,
+                    dims=("velocity","period"),
+                    coords=dict(
+                        velocity=c,
+                        period=T
+                    )
+                )
+                ftn.to_netcdf("./example_ftan.nc")
                 #
                 minT = 1
                 maxT_disp = int(distance/6000)
@@ -99,8 +121,9 @@ try:
                     cmap = "rainbow"
                 else:
                     cmap = "seismic"
-                ax.pcolormesh(T,c,c_T_array,cmap=plt.get_cmap(cmap),zorder=1)
-                ax.scatter(T_peak,c_peak,marker=".",color="black",s=0.7,picker=True,zorder=3)
+                ax.pcolormesh(T,c,c_T_array,cmap=plt.get_cmap(cmap),zorder=1) # type: ignore
+                ax.plot(regional_period,regional_phasevel,color="black")
+                ax.scatter(T_peak,c_peak,marker=".",color="black",s=0.7,picker=True,zorder=3) # type: ignore
                 three_lambda = distance/9000
                 ax.plot([three_lambda,three_lambda],[minv,maxv],color="green")
                 ax.set_ylabel("Velocity (km/s)")
@@ -146,12 +169,12 @@ try:
                     else:
                         cmap = "seismic"
                     #
-                    ax.pcolormesh(T,c,c_T_array,cmap=plt.get_cmap(cmap),zorder=1)
+                    ax.pcolormesh(T,c,c_T_array,cmap=plt.get_cmap(cmap),zorder=1) # type: ignore
                     # ax.scatter(disp_T,disp_c,marker=".",color="green")
                     ax.plot(phase_disp_T,phase_disp_c,color="green",zorder=3)
                     for i in range(len(T_peak_list)):
                         Temp = T_peak_list[i]*np.ones((len(c_peak_list[i])))
-                        ax.scatter(Temp,c_peak_list[i],marker=".",color="black",s=0.7,zorder=4)
+                        ax.scatter(Temp,c_peak_list[i],marker=".",color="black",s=0.7,zorder=4) # type: ignore
                     # ax.scatter(T_peak,c_peak,marker=".",color="black",s=0.7)
                     three_lambda = distance/9000
                     # ax.plot([three_lambda,three_lambda],[2,5],color="yellow",zorder=2)

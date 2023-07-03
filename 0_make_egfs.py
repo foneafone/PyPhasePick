@@ -29,7 +29,7 @@ def egf_worker(outdir,station_pair,daily_paths,stack_type,pws_power):
     Worker function that calls daily_to_egf to compute egf for station pair
     then saves the output.
     """
-    egf_trace = daily_to_egf(daily_paths)
+    egf_trace = daily_to_egf(daily_paths,stack_type,pws_power)
     egf_trace.write(f"{outdir}/{station_pair}.mseed")
     return station_pair
 

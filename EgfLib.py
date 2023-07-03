@@ -1,10 +1,13 @@
 import numpy as np
 import obspy
+import obspy.core.trace
 import time
 import matplotlib.pyplot as plt
+import matplotlib.pyplot
 import os
 import glob
 import json
+from tqdm import tqdm
 from scipy.signal import hilbert, find_peaks
 from scipy.special import expit
 import multiprocessing
@@ -51,7 +54,7 @@ def pws(stream_array,pws_power,ktime,fs):
     l_stack = linear_stack(stream_array)
     return l_stack*p_stack
 
-def station_pair_stack(path2component=None,station1=None,station2=None,cc_stream=None,stack_type="linear",pws_power=2):
+def station_pair_stack(**kwargs):
     """
     Function to call a stacking function to stack cross corelations from a single
     station pair. 
@@ -66,9 +69,19 @@ def station_pair_stack(path2component=None,station1=None,station2=None,cc_stream
 
      Note: Must include either path2component, station1 and station2 OR cc_stream
     """
+    # path2component=None
+    # station1=None
+    # station2=None
+    # cc_stream=None
+    #Defaults for stack type and phase weighted stacking
+    stack_type = "linear" if not "stack_type" in kwargs else kwargs["stack_type"]
+    pws_power = 2 if not "pws_power" in kwargs else kwargs["pws_power"]
     ktime = 1
     #
-    if type(cc_stream)==None:
+    if "station1" in kwargs and "station2" in kwargs and "path2component" in kwargs:
+        station1 = kwargs["station1"]
+        station2 = kwargs["station2"]
+        path2component = kwargs["path2component"]
         station_pair = station1+"_"+station2
         if not os.path.exists(path2component+station_pair):
             station_pair = station2+"_"+station1
@@ -78,9 +91,12 @@ def station_pair_stack(path2component=None,station1=None,station2=None,cc_stream
         path = path2component + station_pair +"/*.MSEED"
         cc_stream = obspy.read(path)
         cc_stats = cc_stream[0].stats
-    else:
+    elif "cc_stream" in kwargs:
+        cc_stream = kwargs["cc_stream"]
         assert type(cc_stream)==obspy.Stream
         cc_stats = cc_stream[0].stats
+    else:
+        raise KeyError("The ")
     fs = cc_stats["sampling_rate"]
     stream_array = stream2array(cc_stream)
     if stack_type == "linear":
@@ -125,12 +141,35 @@ def egf(cc_stacked_trace,fmin=0.0166,fmax=2):
     outStats.npts = len(xout)
     outStats.channel = "ZZ"
     #
-    egf_trace = obspy.core.trace.Trace(data=xout,header=outStats)
+    egf_trace = obspy.Trace(data=xout,header=outStats)
     return egf_trace
 
 #######################################################################################################
 #                                           FTAN Functions                                            #
 #######################################################################################################
+
+def calc_snr(tr_in,distance):
+    """
+    Calculates an estimate snr by summing the energy of the signal between 2 and 5 km/s and dividing it
+    by the remaining energy. 
+    """
+    trace = tr_in.copy()
+    trace.filter("bandpass",freqmin=1/80,freqmax=1,zerophase=True,corners=6)
+    egf = trace.data
+    fs = trace.stats["sampling_rate"]
+    delta = 1/fs
+    egf_tt = np.arange(delta,len(egf)*delta+delta,delta)
+    #
+    mintime = distance/5000
+    maxtime = distance/2000
+    len_egf = len(egf)*delta
+    len_signal = maxtime-mintime
+    signal = np.sqrt(sum([x*x for x,t in zip(egf,egf_tt) if t > mintime and t < maxtime])/len_signal)
+    noise = np.sqrt(sum([x*x for x,t in zip(egf,egf_tt) if t > maxtime])/(len_egf-maxtime))
+    if noise == 0:
+        noise = 0.000001
+    SNR = signal/noise
+    return SNR
 
 def narrow_band_butter(tr_in,central,width,width_type):
     """
@@ -311,8 +350,8 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
             for p in procs:
                 i, c_array,wave_filtered = p.get()
                 c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
-            pool.join()
             pool.close()
+            pool.join()
     else:
         for i in range(len(central_periods)):
             i, c_array,wave_filtered = filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group)
@@ -333,22 +372,36 @@ def define_peaks(c_T):
 
 def regional_dispersion_worker(egf_path,distance,fSettings,vel_type,wave_num):
     egf_trace = obspy.read(egf_path)
+    egf_trace = egf_trace[0]
     if vel_type == "group":
         do_group = True
     else:
         do_group = False
-    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,do_group=do_group)
     #
-    c_T_array = define_peaks(c_T_array)
-    c_T_out = np.zeros((c_T_array.shape[0],c_T_array.shape[1],2))
-    for i in range(len(c)):
-        for j in range(len(T)):
-            if c[i]*1000*T[j] <= distance/wave_num:
-                c_T_out[i,j,0] = float(c_T_array[i,j])
-                c_T_out[i,j,1] = 1
-            else:
-                c_T_out[i,j,0] = 0
-                c_T_out[i,j,1] = 0
+    minT = fSettings[0]
+    maxT = fSettings[1]
+    dT = fSettings[2]
+    dv = fSettings[5]
+    minv = fSettings[6]
+    maxv = fSettings[7]
+    c_T_array_shape = (len(np.arange(minv,maxv+dv,dv)),len(np.arange(minT,maxT,dT)))
+    c_T_out = np.zeros((c_T_array_shape[0],c_T_array_shape[1],2))
+    #
+    snr = calc_snr(egf_trace,distance)
+    maxtime = distance/2000
+    lenTrace = len(egf_trace.data)/egf_trace.stats["sampling_rate"]
+    if snr > 2.6 and maxtime < lenTrace:
+        T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,do_group=do_group)
+        c_T_array = define_peaks(c_T_array)
+        #
+        for i in range(len(c)):
+            for j in range(len(T)):
+                if c[i]*1000*T[j] <= distance/wave_num:
+                    c_T_out[i,j,0] = float(c_T_array[i,j])
+                    c_T_out[i,j,1] = 1
+                else:
+                    c_T_out[i,j,0] = 0
+                    c_T_out[i,j,1] = 0
     return c_T_out
 
 def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wave_num=2):
@@ -367,27 +420,28 @@ def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wa
     c_T_regional = np.zeros(c_T_shape)
     ones_sum = np.zeros(c_T_shape)
     #
-    if __name__=="__main__":
-        with multiprocessing.Pool(threads) as pool:
-            procs = []
-            for i in range(len(egf_pathlist)):
-                egf_path = egf_pathlist[i]
-                distance = distance_list[i]
-                p = pool.apply_async(regional_dispersion_worker,args=(egf_path,distance,fSettings,vel_type,wave_num))
-                procs.append(p)
-            count=1
-            total = len(procs)
-            for p in procs:
-                c_T_array = p.get()
-                c_T_regional = c_T_regional+c_T_array[:,:,0]
-                ones_sum = ones_sum+c_T_array[:,:,1]
-                print(f"Done {count} of {total} FTAN   ",end="\r")
-                count+=1
-            print("Done all FTAN, joining threads           ")
-            pool.join()
-            pool.close()
-    for i in range(c_T_array.shape[0]):
-        for j in range(c_T_array.shape[1]):
+    #if __name__=="__main__":
+    with multiprocessing.Pool(threads) as pool:
+        procs = []
+        for i in range(len(egf_pathlist)):
+            egf_path = egf_pathlist[i]
+            distance = distance_list[i]
+            p = pool.apply_async(regional_dispersion_worker,args=(egf_path,distance,fSettings,vel_type,wave_num))
+            procs.append(p)
+        print("All FTAN processes running...")
+        count=1
+        total = len(procs)
+        for p in tqdm(procs):
+            c_T_array = p.get()
+            c_T_regional = c_T_regional+c_T_array[:,:,0]
+            ones_sum = ones_sum+c_T_array[:,:,1]
+            # print(f"Done {count} of {total} FTAN   ",end="\r")
+            count+=1
+        print("Done all FTAN, joining threads           ")
+        pool.close()
+        pool.join()
+    for i in range(c_T_shape[0]):
+        for j in range(c_T_shape[1]):
             if ones_sum[i,j] != 0:
                 c_T_regional[i,j] = c_T_regional[i,j]/ones_sum[i,j]
     return c, T, c_T_regional
@@ -473,8 +527,8 @@ def pick_regional(c,T,c_T,plotfile):
     c_peak_list = c_peaks(c,c_T)
     T_scatter, c_scatter = c_peaks_scatter(T,c_peak_list)
     fig = plt.figure(figsize=(1080/180,1080/180),dpi=180,constrained_layout=True)
-    plt.pcolormesh(T,c,c_T,cmap=plt.get_cmap("rainbow"),zorder=1)
-    plt.scatter(T_scatter,c_scatter,marker=".",color="black",s=0.7,picker=True)
+    plt.pcolormesh(T,c,c_T,cmap=plt.get_cmap("rainbow"),zorder=1) # type: ignore
+    plt.scatter(T_scatter,c_scatter,marker=".",color="black",s=0.7,picker=True) # type: ignore
     plt.xlabel("Period (s)")
     plt.ylabel("Velocity (km/s)")
     c_click = []
@@ -496,9 +550,8 @@ def pick_regional(c,T,c_T,plotfile):
     grad_thresh = 0.4*abs(T[1]-T[0])
     T_disp,c_disp = gen_curve_from_regional_period(T,c_peak_list,c_click[-1],T_click[-1],60,grad_thresh)
     fig = plt.figure(figsize=(1080/180,1080/180),dpi=180,constrained_layout=True)
-    plt.pcolormesh(T,c,c_T,cmap=plt.get_cmap("rainbow"),zorder=1)
-    plt.scatter(T_scatter,c_scatter,marker=".",color="black",s=0.7,picker=True)
-    plt.scatter(T_click,c_click,marker=".",color="green")
+    plt.pcolormesh(T,c,c_T,cmap=plt.get_cmap("rainbow"),zorder=1) # type: ignore
+    plt.scatter(T_scatter,c_scatter,marker=".",color="black",s=0.7,picker=True) # type: ignore
     plt.plot(T_disp,c_disp,color="black")
     plt.xlabel("Period (s)")
     plt.ylabel("Velocity (km/s)")
@@ -535,6 +588,7 @@ def make_c_T_lists(T_peaks,c_peaks):
 
 def find_closest_v2(T_list,c_list,T_point,c_point):
     min_dist = 5000000
+    out_inds = (0,0)
     for i in range(len(T_list)):
         cl = c_list[i]
         for j in range(len(cl)):
@@ -554,6 +608,7 @@ def conect_points_v2(T_list,c_list,pick1,pick2):
             c_out.append(cl_i[pick1[1]])
         else:
             min_dist = 5000000
+            next_c = 0
             for j in range(len(cl_i)):
                 dist = abs(cl_i[j]-c_out[-1])
                 if dist < min_dist:
