@@ -1,6 +1,7 @@
 import numpy as np
 import obspy
 import obspy.core.trace
+from obspy import UTCDateTime
 import time
 import matplotlib.pyplot as plt
 import matplotlib.pyplot
@@ -11,10 +12,52 @@ from tqdm import tqdm
 from scipy.signal import hilbert, find_peaks
 from scipy.special import expit
 import multiprocessing
+import pandas as pd
+from numpy import cos,sin
+
+
 
 #######################################################################################################
 #                                          Stacking Functions                                         #
 #######################################################################################################
+
+def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps):
+    stations_df = pd.read_csv(stations_csv)
+    job_list = []
+    jobtypes = []
+    if "TT" in comps or "RR" in comps:
+        jobtypes.append("horezontal")
+    if "ZZ" in comps:
+        jobtypes.append("vertical")
+    for i,row1 in stations_df.iterrows():
+        for j,row2 in stations_df.iterrows():
+            net1, sta1, lat1, lon1 = row1["network"], row1["station"], row1["lat"], row1["lon"]
+            net2, sta2, lat2, lon2 = row2["network"], row2["station"], row2["lat"], row2["lon"]
+            path = cc_path_structure.replace("NET1",net1).replace("NET2",net2)
+            path = path.replace("STA1",sta1).replace("STA2",sta2)
+            path = path.replace("YEAR","*").replace("MM","*").replace("DD","*")
+            #
+            for jobtype in jobtypes:
+                if jobtype == "vertical":
+                    paths = glob.glob(path.replace("COMP","ZZ"))
+                    if paths != []:
+                        paths = [pt for pt in paths if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
+                        job = (jobtype,net1,sta1,net2,sta2,paths)
+                        job_list.append(job)
+                if jobtype == "horezontal":
+                    gcm, az, baz = obspy.geodetics.base.gps2dist_azimuth(lat1,lon1,lat2,lon2)
+                    pathsEE = glob.glob(path.replace("COMP","EE"))
+                    if pathsEE != []:
+                        pathsEE = [pt for pt in pathsEE if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
+                        pathsEN = glob.glob(path.replace("COMP","EN"))
+                        pathsEN = [pt for pt in pathsEN if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
+                        pathsNN = glob.glob(path.replace("COMP","NN"))
+                        pathsNN = [pt for pt in pathsNN if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
+                        pathsNE = glob.glob(path.replace("COMP","NE"))
+                        pathsNE = [pt for pt in pathsNE if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
+                        job = (jobtype,net1,sta1,net2,sta2,az,baz,comps,pathsEE,pathsEN,pathsNN,pathsNE)
+                        job_list.append(job)
+    return job_list
 
 def gen_delays(cc_stats):
     dt = 1/cc_stats["sampling_rate"]
@@ -110,6 +153,39 @@ def station_pair_stack(**kwargs):
     return cc_stacked_trace
 
 #######################################################################################################
+#                                         Rotation Functions                                          #
+#######################################################################################################
+
+def rotate_cc(ee_stacked_trace,en_stacked_trace,nn_stacked_trace,ne_stacked_trace,az,baz):
+    sinaz = sin(np.pi*az/180)
+    cosaz = cos(np.pi*az/180)
+    sinbaz = sin(np.pi*baz/180)
+    cosbaz = cos(np.pi*baz/180)
+    rotation_matrix = np.array([[-cosaz*cosbaz,  cosaz*sinbaz, -sinaz*sinbaz,  sinaz*cosbaz],
+                                [-sinaz*sinbaz, -sinaz*cosbaz, -cosaz*cosbaz, -cosaz*sinbaz],
+                                [-cosaz*sinbaz,  cosaz*cosbaz,  sinaz*cosbaz,  sinaz*sinbaz],
+                                [-sinaz*cosbaz,  sinaz*cosbaz,  cosaz*cosbaz, -cosaz*sinbaz]])
+    component_matrix = np.array([ee_stacked_trace.data,
+                                 en_stacked_trace.data,
+                                 nn_stacked_trace.data,
+                                 ne_stacked_trace.data])
+    rotated_cc = np.matmul(rotation_matrix,component_matrix)
+    #
+    cc_stats = ee_stacked_trace.stats
+    #
+    cc_stats.channel = "TT"
+    tt_stacked_trace = obspy.Trace(data=rotated_cc[0,:],header=cc_stats)
+    cc_stats.channel = "RR"
+    rr_stacked_trace = obspy.Trace(data=rotated_cc[1,:],header=cc_stats)
+    cc_stats.channel = "TR"
+    tr_stacked_trace = obspy.Trace(data=rotated_cc[2,:],header=cc_stats)
+    cc_stats.channel = "RT"
+    rt_stacked_trace = obspy.Trace(data=rotated_cc[3,:],header=cc_stats)
+    #
+    return tt_stacked_trace, rr_stacked_trace, tr_stacked_trace, rt_stacked_trace
+
+
+#######################################################################################################
 #                                            EGF Functions                                            #
 #######################################################################################################
 
@@ -143,6 +219,91 @@ def egf(cc_stacked_trace,fmin=0.0166,fmax=2):
     #
     egf_trace = obspy.Trace(data=xout,header=outStats)
     return egf_trace
+
+def egf_worker(job,save_cc,outdir,stack_type,pws_power):
+    """
+    Worker function that runs a vertical or horezontal job. For a vertical job ZZ is read in as a stream
+    and fed to station_pair_stack and then to egf. For a horezontal job NN,EE,NE,EN is read in as a set
+    of streams and then each passed through station_pair_stack sequentialy, the stacked cc are then rotated
+    using rotate_cc and the rotated cc are then put through egf.
+
+    If save_cc is True all cc stacked cc will be saved. 
+    """
+    if job[0] == "vertical":
+        try:
+            jobtype,net1,sta1,net2,sta2,paths = job
+            zz_stream = obspy.Stream()
+            for path in paths:
+                zz_stream += obspy.read(path)
+            #
+            zz_stacked_trace = station_pair_stack(cc_stream=zz_stream,stack_type=stack_type,pws_power=pws_power)
+            if save_cc:
+                zz_stacked_trace.write(f"{outdir}/CC/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
+            #
+            egf_trace = egf(zz_stacked_trace)
+            egf_trace.write(f"{outdir}/EGF/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
+            return f"{net1}_{sta1}_{net2}_{sta2}__ZZ"
+        except Exception as e:
+            print(f"WARNING: Following exeption raised in job: {job[0]}_{job[1]}_{job[2]}_{job[3]}_{job[4]}")
+            print(e)
+            with open("egf_failed.log","a") as f:
+                f.write(f"WARNING: Following exeption raised in job: {job[0]}_{job[1]}_{job[2]}_{job[3]}_{job[4]}\n{net1}_{sta1}_{net2}_{sta2}__ZZ  <-------  FAILED\n")
+            return f"{net1}_{sta1}_{net2}_{sta2}__ZZ  <-------  FAILED"
+    elif job[0] == "horezontal":
+        try:
+            jobtype,net1,sta1,net2,sta2,az,baz,comps,pathsEE,pathsEN,pathsNN,pathsNE = job
+            #
+            ee_stream = obspy.Stream()
+            for path in pathsEE:
+                ee_stream += obspy.read(path)
+            ee_stacked_trace = station_pair_stack(cc_stream=ee_stream,stack_type=stack_type,pws_power=pws_power)
+            #
+            en_stream = obspy.Stream()
+            for path in pathsEN:
+                en_stream += obspy.read(path)
+            en_stacked_trace = station_pair_stack(cc_stream=en_stream,stack_type=stack_type,pws_power=pws_power)
+            #
+            nn_stream = obspy.Stream()
+            for path in pathsNN:
+                nn_stream += obspy.read(path)
+            nn_stacked_trace = station_pair_stack(cc_stream=nn_stream,stack_type=stack_type,pws_power=pws_power)
+            #
+            ne_stream = obspy.Stream()
+            for path in pathsNE:
+                ne_stream += obspy.read(path)
+            ne_stacked_trace = station_pair_stack(cc_stream=ne_stream,stack_type=stack_type,pws_power=pws_power)
+            #
+            tt_stacked_trace, rr_stacked_trace, tr_stacked_trace, rt_stacked_trace = rotate_cc(ee_stacked_trace,en_stacked_trace,nn_stacked_trace,ne_stacked_trace,az,baz)
+            if save_cc:
+                tt_stacked_trace.write(f"{outdir}/CC/TT/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                rr_stacked_trace.write(f"{outdir}/CC/RR/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                tr_stacked_trace.write(f"{outdir}/CC/TR/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                rt_stacked_trace.write(f"{outdir}/CC/RT/{net1}_{sta1}_{net2}_{sta2}.mseed")
+            #
+            for comp in comps:
+                if comp == "TT":
+                    egf_trace = egf(tt_stacked_trace)
+                    egf_trace.write(f"{outdir}/EGF/TT/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                if comp == "RR":
+                    egf_trace = egf(rr_stacked_trace)
+                    egf_trace.write(f"{outdir}/EGF/RR/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                if comp == "TR":
+                    egf_trace = egf(tr_stacked_trace)
+                    egf_trace.write(f"{outdir}/EGF/TR/{net1}_{sta1}_{net2}_{sta2}.mseed")
+                if comp == "RT":
+                    egf_trace = egf(rt_stacked_trace)
+                    egf_trace.write(f"{outdir}/EGF/RT/{net1}_{sta1}_{net2}_{sta2}.mseed")
+            return f"{net1}_{sta1}_{net2}_{sta2}__TT_RR"
+        except Exception as e:
+            print(f"WARNING: Following exeption raised in job: {job[0]}_{job[1]}_{job[2]}_{job[3]}_{job[4]}")
+            print(e)
+            with open("egf_failed.log","a") as f:
+                f.write(f"WARNING: Following exeption raised in job: {job[0]}_{job[1]}_{job[2]}_{job[3]}_{job[4]}\n{net1}_{sta1}_{net2}_{sta2}__TT_RR  <-------  FAILED\n")
+            return f"{net1}_{sta1}_{net2}_{sta2}__TT_RR  <-------  FAILED"
+    else:
+        return f"Invalid job type {job[0]}"
+
+    
 
 #######################################################################################################
 #                                           FTAN Functions                                            #
