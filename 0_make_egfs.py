@@ -62,19 +62,19 @@ if __name__=="__main__":
     startdate = "1970-01-01"
     enddate = "2021-07-01"
 
-    # stack_type="pws" # linear or pws
-    stack_type = "linear"
+    stack_type="pws" # linear or pws
+    # stack_type = "linear"
     pws_power = 2
 
     save_cc = True
 
-    #Will save in this directory:
-    # For egfs - EGF/COMP/NET1_STA1_NET2_STA2.mseed
-    # For ccs  - CC/COMP/NET1_STA1_NET2_STA2.mseed
-    outdir = f"/raid1/jwf39/askja/pre_jul21/linear"
-    # outdir = f"/raid1/jwf39/askja/pre_jul21/pws"
+    remake = False
 
-    threads = 10
+    #Will save in this directory:
+    # outdir = f"/raid1/jwf39/askja/pre_jul21/linear"
+    outdir = f"/raid1/jwf39/askja/pre_jul21/pws"
+
+    threads = 20
 
 #######################################################################
 #                               Main                                  #
@@ -82,7 +82,8 @@ if __name__=="__main__":
 
 if __name__=="__main__":
     print("Generating jobs list.")
-    job_list = make_stack_jobs(stations_csv,cc_path_structure,startdate,enddate,comps)
+    job_list = make_stack_jobs(stations_csv,cc_path_structure,startdate,enddate,comps,outdir,remake)
+    # print(len(job_list))
     #
     print("Making output directories")
     if not os.path.isdir(f"{outdir}/EGF"):
@@ -109,5 +110,5 @@ if __name__=="__main__":
             station_pair = p.get()
             print(f"Done station pair {station_pair}")
         pool.close()
-        pool.join()
+        pool.terminate()
     

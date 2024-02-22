@@ -8,6 +8,7 @@ import os
 import glob
 import json
 import multiprocessing
+import pandas as pd
 
 from EgfLib import FTAN, make_c_T_lists, peak_array, find_closest_v2, conect_points_v2
 
@@ -15,29 +16,41 @@ from EgfLib import FTAN, make_c_T_lists, peak_array, find_closest_v2, conect_poi
 #                             Settings                                #
 #######################################################################
 
-egf_dir = "/raid3/jwf39/borneo_cc/EGF/pws/ZZ"
+stations_csv = "/raid1/jwf39/askja/STATIONS/askja_stations.csv"
+stationsdf = pd.read_csv(stations_csv)
 
-station_file = "./station_loc.json"
+stationpair_csv = "/raid1/jwf39/askja/STATIONS/station_pairs.csv"
+stationpairdf = pd.read_csv(stationpair_csv)
 
-regional_curve_file = "./regional_dispersion.txt"
+egf_dir = "/raid1/jwf39/askja/pre_jul21/pws"
+
+
+disp_done = "/raid1/jwf39/askja/STATIONS/disp_done.json"
+disp_to_do = "/raid1/jwf39/askja/STATIONS/disp_to_do.json"
+
+vel_type = "group" # "phase" or "group"
+comp = "ZZ"
+
+net = "8K"
+
+regional_curve_file = f"/raid1/jwf39/askja/REGIONAL/regional_dispersion_v2_{vel_type}_{comp}.txt"
+
+min_dist = 4*6000
 
 #Filter Settings
 #Period Axis
-minT = 1
+minT = 0.5
 maxT = 60
-dT = 0.1
+dT = 0.25
 #Velocity Axis
 dv = 0.01
-minv = 1.5
+minv = 1.0
 maxv = 5
 #Filter width
 width_type = "dependent" # "dependent" or "fixed"
 bandwidth = 0.4 # If dependent this will be 0.4*central_period and if fixed will be 0.4 s
 
 fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv)
-
-disp_to_do = "./disp_to_do.npy"
-disp_done = "./picked_dispersion.json"
 
 threads = 4
 
@@ -49,31 +62,25 @@ showEndFigure = True
 
 
 # station_pairs = np.load(disp_to_do)
-station_pairs = ["MY_SRM_YC_SBF4"]
+# station_pairs = ["MY_SRM_YC_SBF4"]
 
-# station_loc = {}
-# stations = np.loadtxt(station_file,usecols=(0),dtype=str,unpack=True)
-# lats, lons = np.loadtxt(station_file,usecols=(1,2),unpack=True)
-# for station,lat,lon in zip(stations,lats,lons):
-#     station_loc[station] = (lat,lon)
-f = open(station_file,"r")
-station_loc = json.load(f)
-f.close()
-
-egf_pathlist = []
-distance_list = []
-for station_pair in station_pairs:
-    # station1, station2 = station_pair.split("_")
-    net1, sta1, net2, sta2 = station_pair.split("_")
-    station1 = f"{net1}_{sta1}"; station2 = f"{net2}_{sta2}"
-    lat1, lon1 = station_loc[station1]
-    lat2, lon2 = station_loc[station2]
-    dist, azab, azbc = obspy.geodetics.base.gps2dist_azimuth(lat1,lon1,lat2,lon2)
-    #
-    egf_path = f"{egf_dir}/{station_pair}.MSEED"
-    #
-    egf_pathlist.append(egf_path)
-    distance_list.append(dist)
+if __name__=="__main__":
+    egf_pathlist = []
+    distance_list = []
+    station_pairs = []
+    for row in stationpairdf.iterrows():
+        if row[1][comp]:
+            sta1 = row[1]["station1"]
+            sta2 = row[1]["station2"]
+            dist = row[1]["gcm"]
+            #
+            egf_path = f"{egf_dir}/EGF/{comp}/{net}_{sta1}_{net}_{sta2}.mseed"
+            #
+            if os.path.isfile(egf_path) and dist >= min_dist:
+                print(egf_path)
+                egf_pathlist.append(egf_path)
+                distance_list.append(dist)
+                station_pairs.append(f"{net}_{sta1}_{net}_{sta2}")
 
 regional_period, regional_phasevel = np.loadtxt(regional_curve_file,unpack=True)
 
@@ -84,17 +91,21 @@ try:
 except Exception:
     done_pairs = {}
 
+if vel_type == "group":
+    do_group = True
+else:
+    do_group = False
+
 try:
     #station_pairs = {"YC_SBA2_YC_SBD2":station_pairs["YC_SBA2_YC_SBD2"]}
     for station_pair,egf_path,distance in zip(station_pairs,egf_pathlist,distance_list):
         if not station_pair in done_pairs:
             rePick = True
             while rePick:
-                vel_type = "phase"
                 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ FTAN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~# 
                 egf_trace = obspy.read(egf_path)
                 egf_trace = egf_trace[0]
-                T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=False)
+                T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=do_group)
                 #
                 ftn = xr.DataArray(
                     data=c_T_array,
@@ -205,10 +216,8 @@ try:
             f.close()
             #
 except KeyboardInterrupt:
-    f = open(disp_to_do,"r")
-    td = len(json.load(f))
-    f.close()
     f = open(disp_done,"r")
     dn = len(json.load(f))
     f.close()
+    td = len(station_pairs)
     raise KeyboardInterrupt("Exiting Script with %s of %s picked" % (dn,td))

@@ -8,12 +8,16 @@ import matplotlib.pyplot
 import os
 import glob
 import json
-from tqdm import tqdm
 from scipy.signal import hilbert, find_peaks
 from scipy.special import expit
 import multiprocessing
 import pandas as pd
 from numpy import cos,sin
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(x):
+        return x
 
 
 
@@ -21,7 +25,7 @@ from numpy import cos,sin
 #                                          Stacking Functions                                         #
 #######################################################################################################
 
-def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps):
+def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps,outdir,remake):
     stations_df = pd.read_csv(stations_csv)
     job_list = []
     jobtypes = []
@@ -37,14 +41,18 @@ def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps):
             path = path.replace("STA1",sta1).replace("STA2",sta2)
             path = path.replace("YEAR","*").replace("MM","*").replace("DD","*")
             #
+            outpath = f"{outdir}/EGF/COMP/{net1}_{sta1}_{net2}_{sta2}.mseed"
+            outZZ = outpath.replace("COMP","ZZ")
+            outTT = outpath.replace("COMP","TT")
+            #
             for jobtype in jobtypes:
-                if jobtype == "vertical":
+                if jobtype == "vertical" and (remake or not os.path.exists(outZZ)):
                     paths = glob.glob(path.replace("COMP","ZZ"))
                     if paths != []:
                         paths = [pt for pt in paths if UTCDateTime(start_date) < UTCDateTime(pt.split("/")[-1].split(".")[0]) < UTCDateTime(end_date)]
                         job = (jobtype,net1,sta1,net2,sta2,paths)
                         job_list.append(job)
-                if jobtype == "horezontal":
+                if jobtype == "horezontal" and (remake or not os.path.exists(outTT)):
                     gcm, az, baz = obspy.geodetics.base.gps2dist_azimuth(lat1,lon1,lat2,lon2)
                     pathsEE = glob.glob(path.replace("COMP","EE"))
                     if pathsEE != []:
@@ -189,7 +197,7 @@ def rotate_cc(ee_stacked_trace,en_stacked_trace,nn_stacked_trace,ne_stacked_trac
 #                                            EGF Functions                                            #
 #######################################################################################################
 
-def egf(cc_stacked_trace,fmin=0.0166,fmax=2):
+def egf(cc_stacked_trace,comp,fmin=0.0166,fmax=2):
     """
     Function to compute the egf from a cross corelation trace by using the formula
               d  ( NCFab(t) + NCFba(-t) )
@@ -215,7 +223,7 @@ def egf(cc_stacked_trace,fmin=0.0166,fmax=2):
     outStats.sampling_rate = fs
     outStats.delta = delta
     outStats.npts = len(xout)
-    outStats.channel = "ZZ"
+    outStats.channel = comp
     #
     egf_trace = obspy.Trace(data=xout,header=outStats)
     return egf_trace
@@ -240,7 +248,7 @@ def egf_worker(job,save_cc,outdir,stack_type,pws_power):
             if save_cc:
                 zz_stacked_trace.write(f"{outdir}/CC/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
             #
-            egf_trace = egf(zz_stacked_trace)
+            egf_trace = egf(zz_stacked_trace,comp)
             egf_trace.write(f"{outdir}/EGF/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
             return f"{net1}_{sta1}_{net2}_{sta2}__ZZ"
         except Exception as e:
@@ -282,16 +290,16 @@ def egf_worker(job,save_cc,outdir,stack_type,pws_power):
             #
             for comp in comps:
                 if comp == "TT":
-                    egf_trace = egf(tt_stacked_trace)
+                    egf_trace = egf(tt_stacked_trace,comp)
                     egf_trace.write(f"{outdir}/EGF/TT/{net1}_{sta1}_{net2}_{sta2}.mseed")
                 if comp == "RR":
-                    egf_trace = egf(rr_stacked_trace)
+                    egf_trace = egf(rr_stacked_trace,comp)
                     egf_trace.write(f"{outdir}/EGF/RR/{net1}_{sta1}_{net2}_{sta2}.mseed")
                 if comp == "TR":
-                    egf_trace = egf(tr_stacked_trace)
+                    egf_trace = egf(tr_stacked_trace,comp)
                     egf_trace.write(f"{outdir}/EGF/TR/{net1}_{sta1}_{net2}_{sta2}.mseed")
                 if comp == "RT":
-                    egf_trace = egf(rt_stacked_trace)
+                    egf_trace = egf(rt_stacked_trace,comp)
                     egf_trace.write(f"{outdir}/EGF/RT/{net1}_{sta1}_{net2}_{sta2}.mseed")
             return f"{net1}_{sta1}_{net2}_{sta2}__TT_RR"
         except Exception as e:
@@ -339,7 +347,7 @@ def narrow_band_butter(tr_in,central,width,width_type):
     """
     trace = tr_in.copy()
     trace = trace.detrend("linear")
-    trace = trace.taper(0.05)
+    trace = trace.taper(0.01)
     if width_type == "dependent":
         minT = central-(central*width)
         maxT = central+(central*width)
@@ -394,14 +402,21 @@ def group(x):
     """
     Finds the envalope of the array x by taking the absolute of the analytical signal.
     """
-    out = np.abs(hilbert(x))
-    return out
+    x = np.abs(hilbert(x))**2
+    return x
+def phase(x):
+    x = np.angle(hilbert(x))
+    x = np.cos(x)
+    return x
 
 def gen_c_array(tt,T,w,distance,do_group,minv,maxv):
     """
     Function that converts from a narrow band filtered waveform from the time
     domain into the velocity domain by doing:
     c = d/(t-T/8)
+    If finding phase velocity and
+    c = d/t
+    If finding group velocity
 
     Inputs:
      * tt - Travel time array [1darray]
@@ -419,12 +434,20 @@ def gen_c_array(tt,T,w,distance,do_group,minv,maxv):
     out_c = []
     out_w = []
     distance = distance/1000
-    for i in range(len(tt)):
-        t = tt[i] -T/8
-        if t > 0:
-            c = distance/t
-            out_c.append(c)
-            out_w.append(w[i])
+    if do_group: # If doing group do c = d/t
+        for i in range(len(tt)):
+            t = tt[i]
+            if t > 0:
+                c = distance/t
+                out_c.append(c)
+                out_w.append(w[i])
+    else: # If doing phase do c = d/(t-T/8)
+        for i in range(len(tt)):
+            t = tt[i] -T/8
+            if t > 0:
+                c = distance/t
+                out_c.append(c)
+                out_w.append(w[i])
     out_w = np.array(out_w)
     w_oi = np.array([wi for wi,ci in zip(out_w,out_c) if ci >= minv and ci <= maxv])
     if do_group:
@@ -444,6 +467,8 @@ def filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_
     wave_filtered = narrow_band_butter(trace,central,bandwidth,width_type)
     if do_group:
         wave_filtered = group(wave_filtered)
+    else:
+        wave_filtered = phase(wave_filtered)
     # wave_filtered = group(wave_filtered)
     c_array, wave_filtered  = gen_c_array(tt,central,wave_filtered,distance,do_group,minv,maxv)
     #
@@ -491,7 +516,7 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     tt = np.arange(delta,len(egf)*delta+delta,delta)
     # tt, egf_cut = cut_egf(tt,egf,distance,minvel=2000,maxvel=5000)
     # #print(tt)
-    trace.data, taper_x = egf_taper(tt,trace.data,distance)
+    # trace.data, taper_x = egf_taper(tt,trace.data,distance)
     central_periods = np.arange(minT,maxT,dT)
     #
     # Taper and detrend/demean
@@ -600,7 +625,7 @@ def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wa
             count+=1
         print("Done all FTAN, joining threads           ")
         pool.close()
-        pool.join()
+        pool.terminate()
     for i in range(c_T_shape[0]):
         for j in range(c_T_shape[1]):
             if ones_sum[i,j] != 0:
@@ -683,7 +708,7 @@ def pick_regional(c,T,c_T,plotfile):
     from scipy.ndimage.filters import gaussian_filter
     # for i in range(len(T)):
     #     c_T[:,i] = (c_T[:,i]-min(c_T[:,i]))/(max(c_T[:,i]-min(c_T[:,i])))
-    std = 0.05/(c[1]-c[0])
+    std = 0.07/(c[1]-c[0])
     c_T = gaussian_filter(c_T,std,order=0)
     c_peak_list = c_peaks(c,c_T)
     T_scatter, c_scatter = c_peaks_scatter(T,c_peak_list)
@@ -777,3 +802,91 @@ def conect_points_v2(T_list,c_list,pick1,pick2):
                     next_c = float(cl_i[j])
             c_out.append(next_c)
     return np.array(Tl), np.array(c_out)
+
+def auto_phase_picker(job,regional_period,regional_phasevel,fSettings,stopping_threshold,do_group):
+    station_pair, egf_path, distance = job
+    maxT = distance/6000
+    #
+    decreasing_threshold, increasing_threshold = stopping_threshold
+    #
+    egf_trace = obspy.read(egf_path)
+    egf_trace = egf_trace[0]
+    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=1,do_group=do_group)
+    #
+    c_peak_list = c_peaks(c,c_T_array)
+    #
+    pick_c = []
+    pick_T = []
+    for i in range(len(T)): # Itterate backwards through the periods
+        i = -i -1
+        period = T[i]
+        if period < maxT: # When period is less that the maximum period determined by lamda/2 start picking
+            if pick_c == []: # pick first based on reference curve
+                regional_c = np.interp(period,regional_period,regional_phasevel)
+                previous_c = c_peak_list[i][find_closest(c_peak_list[i],regional_c)]
+                pick_c.append(float(previous_c))
+                pick_T.append(float(period))
+            else: # Pick next based on previous velocity
+                new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
+                if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
+                    pick_c.append(float(new_c))
+                    pick_T.append(float(period))
+                    previous_c = float(new_c)
+                else: # if jump is too high return without short periods
+                    pick_c = np.array(pick_c)
+                    pick_T = np.array(pick_T)
+                    inds = np.argsort(pick_T)
+                    pick_c = pick_c[inds]
+                    pick_T = pick_T[inds]
+                    return station_pair, pick_T, pick_c
+    #
+    pick_c = np.array(pick_c)
+    pick_T = np.array(pick_T)
+    inds = np.argsort(pick_T)
+    pick_c = pick_c[inds]
+    pick_T = pick_T[inds]
+    return station_pair, pick_T, pick_c
+
+def auto_group_picker(job,regional_period,regional_phasevel,fSettings,stopping_threshold,do_group=True):
+    station_pair, egf_path, distance = job
+    maxT = distance/6000
+    #
+    decreasing_threshold, increasing_threshold = stopping_threshold
+    #
+    egf_trace = obspy.read(egf_path)
+    egf_trace = egf_trace[0]
+    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=1,do_group=do_group)
+    #
+    c_peak_list = c_peaks(c,c_T_array)
+    #
+    pick_c = []
+    pick_T = []
+    for i in range(len(T)): # Itterate backwards through the periods
+        i = -i -1
+        period = T[i]
+        if period < maxT: # When period is less that the maximum period determined by lamda/2 start picking
+            if pick_c == []: # pick first based on maximum amplitude at maxT
+                regional_c = c[int(np.argmax(c_T_array[:,i]))]
+                previous_c = c_peak_list[i][find_closest(c_peak_list[i],regional_c)]
+                pick_c.append(float(previous_c))
+                pick_T.append(float(period))
+            else: # Pick next based on previous velocity
+                new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
+                if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
+                    pick_c.append(float(new_c))
+                    pick_T.append(float(period))
+                    previous_c = float(new_c)
+                else: # if jump is too high return without short periods
+                    pick_c = np.array(pick_c)
+                    pick_T = np.array(pick_T)
+                    inds = np.argsort(pick_T)
+                    pick_c = pick_c[inds]
+                    pick_T = pick_T[inds]
+                    return station_pair, pick_T, pick_c
+    #
+    pick_c = np.array(pick_c)
+    pick_T = np.array(pick_T)
+    inds = np.argsort(pick_T)
+    pick_c = pick_c[inds]
+    pick_T = pick_T[inds]
+    return station_pair, pick_T, pick_c

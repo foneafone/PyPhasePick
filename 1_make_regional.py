@@ -8,6 +8,7 @@ import os
 import glob
 import json
 import multiprocessing
+import pandas as pd
 
 from EgfLib import regional_dispersion, pick_regional
 
@@ -15,85 +16,96 @@ from EgfLib import regional_dispersion, pick_regional
 #                             Settings                                #
 #######################################################################
 
-filelist = glob.glob("/raid2/jwf39/borneo_cc/msnoise_dir/EGF/pws/ZZ/*.MSEED")
+stations_csv = "/raid1/jwf39/askja/STATIONS/askja_stations.csv"
+stationsdf = pd.read_csv(stations_csv)
 
-f = open("station-pair_gc-arc-m_az-AB_az_BA.json","r")
-station_pairs = json.load(f)
-f.close()
-station_pair_list = []
-for key in station_pairs:
-    station_pair_list.append(key)
+stationpair_csv = "/raid1/jwf39/askja/STATIONS/station_pairs.csv"
+stationpairdf = pd.read_csv(stationpair_csv)
 
-egf_dir = "/raid3/jwf39/borneo_cc/EGF/pws/ZZ"
+egf_dir = "/raid1/jwf39/askja/pre_jul21/pws"
 
-station_file = "./station_loc.json"
+import sys
+args = sys.argv
 
-vel_type = "phase" # "phase" or "goup"
+if len(sys.argv) > 1:
+    vel_type = sys.argv[1]
+    comp = sys.argv[2]
+else:
+    vel_type = "group" # "phase" or "group"
+    comp = "TT"
+
+net = "8K"
+
+min_dist = 4*6000
 
 #Filter Settings
 #Period Axis
-minT = 1
-maxT = 60
-dT = 0.25
+minT = 0.5
+maxT = 13
+dT = 0.05
 #Velocity Axis
-dv = 0.01
+dv = 0.001
 minv = 1.5
-maxv = 5
+maxv = 4.0
 #Filter width
 width_type = "dependent" # "dependent" or "fixed"
 bandwidth = 0.4 # If dependent this will be 0.4*central_period and if fixed will be 0.4 s
 
 fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv)
 
-outfile = "./regional_dispersion.nc"
-regional_curve_file = "./regional_dispersion.txt"
-out_plot = "./regional_dispersion.png"
+outfile = f"/raid1/jwf39/askja/REGIONAL/regional_dispersion_v2_{vel_type}_{comp}.nc"
+regional_curve_file = f"/raid1/jwf39/askja/REGIONAL/regional_dispersion_v2_{vel_type}_{comp}.txt"
+out_plot = f"/raid1/jwf39/askja/STATIONS/regionalImage/regional_dispersion_v2_{vel_type}_{comp}.png"
 
-threads = 40
+use_outfile = True # Use previously computed grid to pick
+pick = True # Plot grid and pick after processing/loading grid
+
+threads = 15
 
 #######################################################################
 #                               Main                                  #
 #######################################################################
 
-# station_loc = {}
-# stations = np.loadtxt(station_file,usecols=(0),dtype=str,unpack=True)
-# lats, lons = np.loadtxt(station_file,usecols=(1,2),unpack=True)
-# for station,lat,lon in zip(stations,lats,lons):
-#     station_loc[station] = (lat,lon)
-f = open(station_file,"r")
-station_loc = json.load(f)
-f.close()
+if __name__=="__main__":
+    egf_pathlist = []
+    distance_list = []
+    for row in stationpairdf.iterrows():
+        if row[1][comp]:
+            sta1 = row[1]["station1"]
+            sta2 = row[1]["station2"]
+            dist = row[1]["gcm"]
+            #
+            egf_path = f"{egf_dir}/EGF/{comp}/{net}_{sta1}_{net}_{sta2}.mseed"
+            #
+            # print(egf_path)
+            if os.path.isfile(egf_path) and dist >= min_dist:
+                egf_pathlist.append(egf_path)
+                distance_list.append(dist)
+    
+    # raise KeyboardInterrupt
+    if use_outfile:
+        print(f"Using previously computed netcdf4 grid")
+        regional = xr.load_dataarray(outfile)
+        c = regional.coords["velocity"].data
+        T = regional.coords["period"].data
+        c_T_regional = regional.data
+    else:
+        print(f"There are {len(egf_pathlist)} files to stack")
+        c, T, c_T_regional = regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wave_num=2)
 
-egf_pathlist = []
-distance_list = []
-for station_pair in station_pair_list:
-    # station1, station2 = station_pair.split("_")
-    net1, sta1, net2, sta2 = station_pair.split("_")
-    station1 = f"{net1}_{sta1}"; station2 = f"{net2}_{sta2}"
-    lat1, lon1 = station_loc[station1]
-    lat2, lon2 = station_loc[station2]
-    dist, azab, azbc = obspy.geodetics.base.gps2dist_azimuth(lat1,lon1,lat2,lon2)
-    #
-    egf_path = f"{egf_dir}/{station_pair}.MSEED"
-    #
-    if os.path.isfile(egf_path):
-        egf_pathlist.append(egf_path)
-        distance_list.append(dist)
+        regional = xr.DataArray(
+            data=c_T_regional,
+            dims=("velocity","period"),
+            coords=dict(
+                velocity=c,
+                period=T
+            )
+        )
+        regional.to_netcdf(outfile)
+    
+    if pick:
+        T_disp, c_disp = pick_regional(c,T,c_T_regional,out_plot)
 
-c, T, c_T_regional = regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wave_num=2)
-
-regional = xr.DataArray(
-    data=c_T_regional,
-    dims=("velocity","period"),
-    coords=dict(
-        velocity=c,
-        period=T
-    )
-)
-regional.to_netcdf(outfile)
-
-T_disp, c_disp = pick_regional(c,T,c_T_regional,out_plot)
-
-with open(regional_curve_file,"w") as f:
-    for T_ref, c_ref in zip(T_disp,c_disp):
-        f.write(f"{T_ref} {c_ref}\n")
+        with open(regional_curve_file,"w") as f:
+            for T_ref, c_ref in zip(T_disp,c_disp):
+                f.write(f"{T_ref} {c_ref}\n")
