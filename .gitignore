@@ -2,3 +2,8 @@
 *.txt
 *.nc
 *.png
+*.log
+nohup.out
+__pycache__/*
+dev*
+nohup*

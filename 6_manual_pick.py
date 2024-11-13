@@ -16,43 +16,46 @@ from EgfLib import FTAN, make_c_T_lists, peak_array, find_closest_v2, conect_poi
 #                             Settings                                #
 #######################################################################
 
-stations_csv = "/raid1/jwf39/askja/STATIONS/askja_stations.csv"
+stations_csv = "/raid2/jwf39/askja/notebooks/all_stations_sep23.csv"
 stationsdf = pd.read_csv(stations_csv)
 
-stationpair_csv = "/raid1/jwf39/askja/STATIONS/station_pairs.csv"
+stationpair_csv = "/raid2/jwf39/askja/notebooks/all_station_pairs_sep23.csv"
 stationpairdf = pd.read_csv(stationpair_csv)
 
-egf_dir = "/raid1/jwf39/askja/pre_jul21/pws"
+egf_dir = "/raid2/jwf39/askja/sep11_sep23/pws"
+matrix_dir = "/raid2/jwf39/askja/sep11_sep23/ftan"
 
-
-disp_done = "/raid1/jwf39/askja/STATIONS/disp_done.json"
-disp_to_do = "/raid1/jwf39/askja/STATIONS/disp_to_do.json"
+disp_done = "/raid2/jwf39/askja/notebooks/disp_done.json"
+disp_to_do = "/raid2/jwf39/askja/notebooks/disp_to_do.json"
 
 vel_type = "group" # "phase" or "group"
 comp = "ZZ"
 
-net = "8K"
+net = "AJ"
 
-regional_curve_file = f"/raid1/jwf39/askja/REGIONAL/regional_dispersion_v2_{vel_type}_{comp}.txt"
+regional_curve_file = f"/raid2/jwf39/askja/REGIONAL/regional_dispersion_v4_{vel_type}_{comp}.txt"
 
-min_dist = 4*6000
+min_dist = 8*6000
 
 #Filter Settings
 #Period Axis
-minT = 0.5
-maxT = 60
+minT = 1
+maxT = 10.0
 dT = 0.25
 #Velocity Axis
-dv = 0.01
+dv = 0.001
 minv = 1.0
-maxv = 5
+maxv = 3.5
 #Filter width
 width_type = "dependent" # "dependent" or "fixed"
 bandwidth = 0.4 # If dependent this will be 0.4*central_period and if fixed will be 0.4 s
+divalpha = 5.0
 
-fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv)
+fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv,divalpha)
 
-threads = 4
+threads = 5
+
+use_matricies = False
 
 showEndFigure = True
 
@@ -74,10 +77,12 @@ if __name__=="__main__":
             sta2 = row[1]["station2"]
             dist = row[1]["gcm"]
             #
-            egf_path = f"{egf_dir}/EGF/{comp}/{net}_{sta1}_{net}_{sta2}.mseed"
+            if use_matricies:
+                egf_path = f"{matrix_dir}/{vel_type}/{comp}/{net}_{sta1}_{net}_{sta2}.nc"
+            else:
+                egf_path = f"{egf_dir}/EGF/{comp}/{net}_{sta1}_{net}_{sta2}.mseed"
             #
             if os.path.isfile(egf_path) and dist >= min_dist:
-                print(egf_path)
                 egf_pathlist.append(egf_path)
                 distance_list.append(dist)
                 station_pairs.append(f"{net}_{sta1}_{net}_{sta2}")
@@ -103,28 +108,36 @@ try:
             rePick = True
             while rePick:
                 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ FTAN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~# 
-                egf_trace = obspy.read(egf_path)
-                egf_trace = egf_trace[0]
-                T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=do_group)
+                if use_matricies:
+                    ftan_grid = xr.load_dataarray(egf_path,engine="netcdf4")
+                    T = ftan_grid.coords["period"].data
+                    c = ftan_grid.coords["velocity"].data
+                    c_T_array = ftan_grid.data
+                else:
+                    egf_trace = obspy.read(egf_path)
+                    egf_trace = egf_trace[0]
+                    T, tt, c, c_T_array, snr_with_period = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=do_group)
                 #
-                ftn = xr.DataArray(
-                    data=c_T_array,
-                    dims=("velocity","period"),
-                    coords=dict(
-                        velocity=c,
-                        period=T
-                    )
-                )
-                ftn.to_netcdf("./example_ftan.nc")
+                # ftn = xr.DataArray(
+                #     data=c_T_array,
+                #     dims=("velocity","period"),
+                #     coords=dict(
+                #         velocity=c,
+                #         period=T
+                #     )
+                # )
+                # ftn.to_netcdf("./example_ftan.nc")
                 #
                 minT = 1
                 maxT_disp = int(distance/6000)
+                maxT_ind = np.argmin(np.abs(T-maxT_disp))
+                # maxval = np.max(c_T_array[:,:maxT_ind])
+                c_T_array = c_T_array[:,:maxT_ind]
+                T = T[:maxT_ind]
                 #
                 # peak_c_T = define_peaks(c_T_array)
                 c_peak, T_peak = peak_array(c,T,c_T_array)
                 T_peak_list, c_peak_list = make_c_T_lists(T_peak,c_peak)
-                mintime = distance/5500
-                maxtime = distance/1500
                 #
                 fig, ax = plt.subplots(1,1,figsize=(1080/180,1080/180),dpi=180,constrained_layout=True)
                 ax.set_title(station_pair)

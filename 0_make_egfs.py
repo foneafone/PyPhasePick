@@ -10,57 +10,25 @@ import pandas as pd
 
 from EgfLib import FTAN, station_pair_stack, egf_worker, make_stack_jobs
 
-# def daily_to_egf_zz(daily_paths,stack_type,pws_power):
-#     """
-#     Computes EGF from a list of daily cross correlations.
-#     * Reads cross correlations from disk as an obspy stream
-#     * Stacks the cross corelations using linear or time domain phase weighted stacking
-#     * Converts to an EGF using the symetrical component
-#     * Returns egf as an obspy trace object
-#     """
-#     cc_stream = obspy.read(daily_paths)
-#     #
-#     cc_stacked_trace = station_pair_stack(cc_stream=cc_stream,stack_type=stack_type,pws_power=pws_power)
-#     #
-#     egf_trace = egf(cc_stacked_trace)
-#     return egf_trace
-
-# def daily_to_egf_ttrr(daily_paths,stack_type,pws_power):
-#     """
-#     Computes EGF from a list of daily cross correlations.
-#     * Reads cross correlations from disk as an obspy stream
-#     * Stacks the cross corelations using linear or time domain phase weighted stacking
-#     * Converts to an EGF using the symetrical component
-#     * Returns egf as an obspy trace object
-#     """
-#     cc_stream = obspy.read(daily_paths)
-#     #
-#     cc_stacked_trace = station_pair_stack(cc_stream=cc_stream,stack_type=stack_type,pws_power=pws_power)
-#     #
-#     egf_trace = egf(cc_stacked_trace)
-#     return egf_trace
-
-# def egf_worker(outdir,station_pair,daily_paths,stack_type,pws_power):
-#     """
-#     Worker function that calls daily_to_egf to compute egf for station pair
-#     then saves the output.
-#     """
-#     egf_trace = daily_to_egf_zz(daily_paths,stack_type,pws_power)
-#     egf_trace.write(f"{outdir}/{station_pair}.mseed")
-#     return station_pair
 
 #######################################################################
 #                             Settings                                #
 #######################################################################
 
 if __name__=="__main__":
-    cc_path_structure = "/raid1/jwf39/askja/STACKS/01/001_DAYS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
+    # cc_path_structure = "/raid2/jwf39/askja/STACKS/01/001_DAYS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
+    cc_path_structure = "/raid2/jwf39/askja/ALL_STACKS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
 
-    stations_csv = "/raid1/jwf39/askja/STATIONS/askja_stations.csv"
+    # stations_csv = "/raid2/jwf39/askja/notebooks/pre_21_all_stations.csv"
+    stations_csv = "/raid2/jwf39/askja/notebooks/all_stations_sep23.csv"
+
+    ignore_network = True
+    replacement_net_code = "AJ"
 
     comps = ("ZZ","RR","TT")
-    startdate = "1970-01-01"
-    enddate = "2021-07-01"
+    # comps = ("ZZ")
+    startdate = "1970-01-01" # "2021-08-01" or "1970-01-01"
+    enddate = "2035-01-01" # "2021-07-01" or "2035-01-01"
 
     stack_type="pws" # linear or pws
     # stack_type = "linear"
@@ -68,11 +36,12 @@ if __name__=="__main__":
 
     save_cc = True
 
-    remake = False
+    remake = True
 
     #Will save in this directory:
-    # outdir = f"/raid1/jwf39/askja/pre_jul21/linear"
-    outdir = f"/raid1/jwf39/askja/pre_jul21/pws"
+    # outdir = f"/raid1/jwf39/askja/sep11_jul21/pws"
+    outdir = f"/raid2/jwf39/askja/sep11_sep23/pws"
+    # outdir = f"/raid2/jwf39/askja/aug21_sep23/pws"
 
     threads = 20
 
@@ -82,7 +51,7 @@ if __name__=="__main__":
 
 if __name__=="__main__":
     print("Generating jobs list.")
-    job_list = make_stack_jobs(stations_csv,cc_path_structure,startdate,enddate,comps,outdir,remake)
+    job_list = make_stack_jobs(stations_csv,cc_path_structure,startdate,enddate,comps,outdir,remake,ignore_net=ignore_network,fake_net=replacement_net_code)
     # print(len(job_list))
     #
     print("Making output directories")
@@ -100,6 +69,8 @@ if __name__=="__main__":
             os.mkdir(f"{outdir}/EGF/{comp}")
     #
     print(f"Starting {len(job_list)} stacking jobs.")
+    for job in job_list:
+        print(job)
     multiprocessing.freeze_support()
     with multiprocessing.Pool(threads) as pool:
         procs = []

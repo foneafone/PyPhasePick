@@ -1,4 +1,5 @@
 import numpy as np
+import xarray as xr
 import obspy
 import obspy.core.trace
 from obspy import UTCDateTime
@@ -25,7 +26,7 @@ except ImportError:
 #                                          Stacking Functions                                         #
 #######################################################################################################
 
-def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps,outdir,remake):
+def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps,outdir,remake,ignore_net=False,fake_net="AJ"):
     stations_df = pd.read_csv(stations_csv)
     job_list = []
     jobtypes = []
@@ -37,13 +38,20 @@ def make_stack_jobs(stations_csv,cc_path_structure,start_date,end_date,comps,out
         for j,row2 in stations_df.iterrows():
             net1, sta1, lat1, lon1 = row1["network"], row1["station"], row1["lat"], row1["lon"]
             net2, sta2, lat2, lon2 = row2["network"], row2["station"], row2["lat"], row2["lon"]
-            path = cc_path_structure.replace("NET1",net1).replace("NET2",net2)
+            if ignore_net:
+                path = cc_path_structure.replace("NET1","*").replace("NET2","*")
+            else:
+                path = cc_path_structure.replace("NET1",net1).replace("NET2",net2)
             path = path.replace("STA1",sta1).replace("STA2",sta2)
             path = path.replace("YEAR","*").replace("MM","*").replace("DD","*")
             #
-            outpath = f"{outdir}/EGF/COMP/{net1}_{sta1}_{net2}_{sta2}.mseed"
+            if ignore_net:
+                outpath = f"{outdir}/EGF/COMP/{fake_net}_{sta1}_{fake_net}_{sta2}.mseed"
+            else:
+                outpath = f"{outdir}/EGF/COMP/{net1}_{sta1}_{net2}_{sta2}.mseed"
             outZZ = outpath.replace("COMP","ZZ")
             outTT = outpath.replace("COMP","TT")
+            outRR = outpath.replace("COMP","RR")
             #
             for jobtype in jobtypes:
                 if jobtype == "vertical" and (remake or not os.path.exists(outZZ)):
@@ -99,9 +107,10 @@ def pws(stream_array,pws_power,ktime,fs):
     len_stream = stream_array.shape[0]
     phase_array = gen_phase_array(stream_array)
     p_stack = np.power(np.abs(phase_array.sum(axis=0)/len_stream),pws_power)
-    kernel = np.ones((int(ktime*fs)))
-    kernel = kernel/sum(kernel)
-    p_stack = np.convolve(p_stack,kernel,mode="same")
+    # Tested smoothing but didn't do anything
+    # kernel = np.ones((int(ktime*fs)))
+    # kernel = kernel/sum(kernel)
+    # p_stack = np.convolve(p_stack,kernel,mode="same")
     l_stack = linear_stack(stream_array)
     return l_stack*p_stack
 
@@ -169,9 +178,13 @@ def rotate_cc(ee_stacked_trace,en_stacked_trace,nn_stacked_trace,ne_stacked_trac
     cosaz = cos(np.pi*az/180)
     sinbaz = sin(np.pi*baz/180)
     cosbaz = cos(np.pi*baz/180)
+    # rotation_matrix = np.array([[-cosaz*cosbaz,  cosaz*sinbaz, -sinaz*sinbaz,  sinaz*cosbaz],
+    #                             [-sinaz*sinbaz, -sinaz*cosbaz, -cosaz*cosbaz, -cosaz*sinbaz],
+    #                             [-cosaz*sinbaz,  cosaz*cosbaz,  sinaz*cosbaz,  sinaz*sinbaz],
+    #                             [-sinaz*cosbaz,  sinaz*cosbaz,  cosaz*cosbaz, -cosaz*sinbaz]])
     rotation_matrix = np.array([[-cosaz*cosbaz,  cosaz*sinbaz, -sinaz*sinbaz,  sinaz*cosbaz],
                                 [-sinaz*sinbaz, -sinaz*cosbaz, -cosaz*cosbaz, -cosaz*sinbaz],
-                                [-cosaz*sinbaz,  cosaz*cosbaz,  sinaz*cosbaz,  sinaz*sinbaz],
+                                [-cosaz*sinbaz, -cosaz*cosbaz,  sinaz*cosbaz,  sinaz*sinbaz],
                                 [-sinaz*cosbaz,  sinaz*cosbaz,  cosaz*cosbaz, -cosaz*sinbaz]])
     component_matrix = np.array([ee_stacked_trace.data,
                                  en_stacked_trace.data,
@@ -197,7 +210,7 @@ def rotate_cc(ee_stacked_trace,en_stacked_trace,nn_stacked_trace,ne_stacked_trac
 #                                            EGF Functions                                            #
 #######################################################################################################
 
-def egf(cc_stacked_trace,comp,fmin=0.0166,fmax=2):
+def egf(cc_stacked_trace,comp,fmin=0.0166,fmax=2,dxdt=True):
     """
     Function to compute the egf from a cross corelation trace by using the formula
               d  ( NCFab(t) + NCFba(-t) )
@@ -217,7 +230,8 @@ def egf(cc_stacked_trace,comp,fmin=0.0166,fmax=2):
     x2 = x[hlf+1:]
     x1 = np.flip(x1)
     xout = (x1+x2)/2
-    xout = (-1)*np.diff(xout)/delta
+    if dxdt:
+        xout = (-1)*np.diff(xout)/delta
     #
     outStats = obspy.core.trace.Stats()
     outStats.sampling_rate = fs
@@ -248,7 +262,7 @@ def egf_worker(job,save_cc,outdir,stack_type,pws_power):
             if save_cc:
                 zz_stacked_trace.write(f"{outdir}/CC/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
             #
-            egf_trace = egf(zz_stacked_trace,comp)
+            egf_trace = egf(zz_stacked_trace,"ZZ")
             egf_trace.write(f"{outdir}/EGF/ZZ/{net1}_{sta1}_{net2}_{sta2}.mseed")
             return f"{net1}_{sta1}_{net2}_{sta2}__ZZ"
         except Exception as e:
@@ -329,8 +343,8 @@ def calc_snr(tr_in,distance):
     delta = 1/fs
     egf_tt = np.arange(delta,len(egf)*delta+delta,delta)
     #
-    mintime = distance/5000
-    maxtime = distance/2000
+    mintime = distance/4500
+    maxtime = distance/1500
     len_egf = len(egf)*delta
     len_signal = maxtime-mintime
     signal = np.sqrt(sum([x*x for x,t in zip(egf,egf_tt) if t > mintime and t < maxtime])/len_signal)
@@ -361,8 +375,8 @@ def narrow_band_butter(tr_in,central,width,width_type):
     fmax = 1/minT
     trace.filter("bandpass",freqmin=fmin,freqmax=fmax,zerophase=True,corners=6)
     out = trace.data
-    norm = np.max((np.max(out),-1*np.min(out)))
-    out = np.array(out)/norm
+    # norm = np.max((np.max(out),-1*np.min(out)))
+    # out = np.array(out)/norm
     return out
 
 def taper_function(x):
@@ -462,20 +476,119 @@ def gen_c_array(tt,T,w,distance,do_group,minv,maxv):
     out_w = np.array(out_w)
     return out_c, out_w
 
-def filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group):
+def filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,snr_vars):
+    min_tt_ind, max_tt_ind, signal_time, total_time = snr_vars
     central = central_periods[i]
     wave_filtered = narrow_band_butter(trace,central,bandwidth,width_type)
-    if do_group:
-        wave_filtered = group(wave_filtered)
-    else:
-        wave_filtered = phase(wave_filtered)
+    #
+    # wave_filtered = phase(wave_filtered)
     # wave_filtered = group(wave_filtered)
-    c_array, wave_filtered  = gen_c_array(tt,central,wave_filtered,distance,do_group,minv,maxv)
+    #
+    # signal = np.sum(np.abs(wave_filtered[min_tt_ind:max_tt_ind])**2)/signal_time
+    # noise = (np.sum(np.abs(wave_filtered[:min_tt_ind]))+np.sum(np.abs(wave_filtered[max_tt_ind:])))/(total_time-signal_time)
+    # snr = np.sqrt(signal/noise)
+    signal = wave_filtered[min_tt_ind:max_tt_ind]
+    noise = np.concatenate((wave_filtered[:min_tt_ind],wave_filtered[max_tt_ind:]))
+    signal_rms = np.sqrt(np.mean(signal**2))
+    noise_rms = np.sqrt(np.mean(noise**2))
+    snr = signal_rms/noise_rms
+    #
+    c_array, wave_filtered  = gen_c_array(tt,central,wave_filtered,distance,False,minv,maxv)
     #
     inds = np.argsort(c_array)
     c_array = c_array[inds]
     wave_filtered = wave_filtered[inds]
-    return i, c_array,wave_filtered
+    return i, c_array,wave_filtered, snr
+
+@np.vectorize
+def get_xfrq(data,datad):
+    if np.abs(data) > 0:
+        xfrq = np.imag(datad/data)
+    else:
+        xfrq = 1.0e5
+    return xfrq
+
+def group_ftn(x, dt, periods, alpha):
+    """
+    Frequency-time analysis of a time series.
+    Calculates the Fourier transform of the signal (xarray),
+    calculates the analytic signal in frequency domain,
+    applies Gaussian bandpass filters centered around given
+    center periods, and calculates the filtered analytic
+    signal back in time domain.
+    Returns the amplitude/phase matrices A(f0,t) and phi(f0,t),
+    that is, the amplitude/phase function of time t of the
+    analytic signal filtered around period T0 = 1 / f0.
+    See. e.g., Levshin & Ritzwoller, "Automated detection,
+    extraction, and measurement of regional surface waves",
+    Pure Appl. Geoph. (2001) and Bensen et al., "Processing
+    seismic ambient noise data to obtain reliable broad-band
+    surface wave dispersion measurements", Geophys. J. Int. (2007).
+    @param dt: sample spacing
+    @type dt: float
+    @param x: data array
+    @type x: L{numpy.ndarray}
+    @param periods: center periods around of Gaussian bandpass filters
+    @type periods: L{numpy.ndarray} or list
+    @param alpha: smoothing parameter of Gaussian filter
+    @type alpha: float
+    @rtype: (L{numpy.ndarray}, L{numpy.ndarray})
+    """
+    # Initializing amplitude/phase matrix: each column =
+    # amplitude function of time for a given Gaussian filter
+    # centered around a period
+    amplitude = np.zeros(shape=(len(periods), len(x)))
+    phase = np.zeros(shape=(len(periods), len(x)))
+    #
+    # Fourier transform
+    Xa = np.fft.fft(x)
+    # aray of frequencies
+    freq = np.fft.fftfreq(x.size, d=dt)
+    df = 1/(len(x)*dt)
+    #
+    # analytic signal in frequency domain:
+    #         | 2X(f)  for f > 0
+    # Xa(f) = | X(f)   for f = 0
+    #         | 0      for f < 0
+    # with X = fft(x)
+    Xa[freq < 0] = 0.0
+    Xa[freq > 0] *= 2.0
+    # plt.plot(freq, Xa.real, freq, Xa.imag)
+    # plt.show()
+    #
+    for iperiod, T0 in enumerate(periods):
+        # bandpassed analytic signal
+        f0 = 1.0 / T0
+        #
+        # plt.plot(freq,np.exp(-alpha * ((freq - f0) / f0) ** 2))
+        # plt.show()
+        # dXa_f0 = np.array(Xa_f0)
+        Xa_f0 = np.array(Xa).copy()
+        #
+        beta = np.pi
+        fac = np.sqrt(beta/alpha)
+        freqmax = (1.0+fac)*f0
+        freqmin = (1.0-fac)*f0
+        if freqmin <= 0.0:
+            freqmin = df
+            freqmax = f0+(f0-freqmin)
+        for i,f in enumerate(freq):
+            if freqmin <= f <= freqmax:
+                Xa_f0[i] = Xa[i] * np.exp(-alpha * ((f - f0) / f0)**2)
+                # dXa_f0[i] = Xa_f0[i]
+                #As trace is in velocity divide by 0 + 2*pi*freq*i
+                # Xa_f0[i] = Xa_f0[i]/complex(0.0,2*np.pi*f)
+            else:
+                # dXa_f0[i] = 0 
+                Xa_f0[i] = complex(0.0,0.0)
+        #
+        # back to time domain
+        xa_f0 = np.fft.ifft(Xa_f0)
+        # dxa_f0 = np.fft.ifft(dXa_f0)
+        # filling amplitude and phase of column
+        amplitude[iperiod, :] = np.abs(xa_f0)
+        # phase[iperiod, :] = np.angle(xa_f0)
+    return amplitude
 
 def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     """
@@ -511,13 +624,21 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     dv = fSettings[5]
     minv = fSettings[6]
     maxv = fSettings[7]
+    divalpha = fSettings[8]
     delta = 1/fs
     #
+    distkm = distance/1000
     tt = np.arange(delta,len(egf)*delta+delta,delta)
+    max_tt_ind = np.argmin(np.abs(tt-distkm/minv))
+    min_tt_ind = np.argmin(np.abs(tt-distkm/maxv))
+    total_time = len(egf)*delta
+    signal_time = distkm/minv - distkm/maxv
+    snr_vars = (min_tt_ind, max_tt_ind, signal_time, total_time)
     # tt, egf_cut = cut_egf(tt,egf,distance,minvel=2000,maxvel=5000)
     # #print(tt)
     # trace.data, taper_x = egf_taper(tt,trace.data,distance)
     central_periods = np.arange(minT,maxT,dT)
+    snr_with_period = np.zeros_like(central_periods)
     #
     # Taper and detrend/demean
     trace = trace.detrend("linear")
@@ -527,22 +648,124 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     c_T_array = np.zeros((len(c_array_interp),len(central_periods)))
     #
     # Generate t-T array and c-T array
-    if threads != 1 and __name__=="__main__":
-        procs = []
-        with multiprocessing.Pool(threads) as pool:
-            for i in range(len(central_periods)):
-                p = pool.apply_async(filter_worker, args=(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group))
-                procs.append(p)
-            for p in procs:
-                i, c_array,wave_filtered = p.get()
-                c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
-            pool.close()
-            pool.join()
-    else:
+    if do_group:
+        alpha = distkm/divalpha
+        amplitude = group_ftn(trace.data,delta,central_periods,alpha)
+        c_array = distkm / tt
+        inds = np.argsort(c_array)
+        c_array = c_array[inds]
         for i in range(len(central_periods)):
-            i, c_array,wave_filtered = filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,do_group)
+            wave_filtered = amplitude[i,:]
+            # mv = np.max(wave_filtered)
+            imax = np.argmax(wave_filtered)
+            lb_i = imax
+            while wave_filtered[lb_i] > wave_filtered[imax]*0.8:
+                lb_i = lb_i - 1
+            ub_i = imax
+            while wave_filtered[ub_i] > wave_filtered[imax]*0.8:
+                ub_i = ub_i + 1
+            signal = np.sum(np.abs(wave_filtered[lb_i:ub_i])**2)
+            signal = signal/signal_time
+            noise = np.sum(np.abs(wave_filtered[:lb_i]))**2 + np.sum(np.abs(wave_filtered[ub_i:]))**2
+            noise = noise/(total_time-signal_time)
+            # snr = np.sqrt(signal/noise)
+            snr = signal/noise
+            snr_with_period[i] = snr
+            # wave = wave[inds]/np.max(wave[inds])
+            wave_filtered = wave_filtered[inds]
             c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
-    return central_periods, tt, c_array_interp, c_T_array
+        # c_T_array = c_T_array/np.max(c_T_array)
+    else:
+        if threads != 1 and __name__=="__main__":
+            procs = []
+            with multiprocessing.Pool(threads) as pool:
+                for i in range(len(central_periods)):
+                    p = pool.apply_async(filter_worker, args=(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,snr_vars))
+                    procs.append(p)
+                for p in procs:
+                    i, c_array,wave_filtered, snr = p.get()
+                    c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
+                    snr_with_period[i] = snr
+                pool.close()
+                pool.join()
+        else:
+            for i in range(len(central_periods)):
+                i, c_array,wave_filtered, snr = filter_worker(i,trace,tt,central_periods,distance,minv,maxv,bandwidth,width_type,snr_vars)
+                c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
+                snr_with_period[i] = snr
+    return central_periods, tt, c_array_interp, c_T_array, snr_with_period
+
+def calc_and_save_ftan(egf_path,outdir,distance,fSettings,vel_type,threads=1):
+    egf_trace = obspy.read(egf_path)[0]
+    #
+    if vel_type == "group":
+        do_group = True
+    else:
+        do_group = False
+    #
+    station_pair = egf_path.split("/")[-1].split(".")[0]
+    outfile = f"{outdir}/{station_pair}.nc"
+    outsnr = f"{outdir}/{station_pair}_snr.npy"
+    #
+    snr = calc_snr(egf_trace,distance)
+    #
+    T, tt, c, c_T_array, snr_with_period = FTAN(egf_trace,distance,fSettings,threads=threads,do_group=do_group)
+    #
+    ftan = xr.DataArray(
+        data=c_T_array,
+        dims=("velocity","period"),
+        coords=dict(
+            velocity=c,
+            period=T
+        )
+    )
+    ftan.to_netcdf(outfile)
+    #
+    np.save(outsnr,snr_with_period)
+    #
+    return station_pair, snr
+
+def high_freq_ftan(egf_trace,distance,fmin,fSettings):
+    minf,maxf,df,bandwidth,width_type,dv,minv,maxv = fSettings
+    distkm = distance/1000
+    if type(egf_trace)==str:
+        egf_trace = obspy.read(egf_trace)
+        egf_trace = egf_trace[0]
+    egf = egf_trace.copy()
+    fs = egf.stats["sampling_rate"]
+    delta=1/fs
+    tt = np.arange(delta,len(egf.data)*delta+delta,delta)
+    max_tt_ind = np.argmin(np.abs(tt-distkm/minv))
+    min_tt_ind = np.argmin(np.abs(tt-distkm/maxv))
+    c_array_interp = np.arange(minv,maxv+dv,dv)
+    #
+    frequs = np.arange(minf,maxf+df,df)
+    central_frequencies = np.array([f for f in frequs if f >= fmin])
+    snr_with_frequency = np.zeros_like(frequs)
+    #
+    c_f_array = np.zeros((len(c_array_interp),len(central_frequencies)))
+    for i,f in enumerate(central_frequencies):
+        T = 1/f
+        wave_filtered = narrow_band_butter(egf,T,bandwidth,width_type)
+        #
+        signal = wave_filtered[min_tt_ind:max_tt_ind]
+        noise = np.concatenate((wave_filtered[:min_tt_ind],wave_filtered[max_tt_ind:]))
+        signal_rms = np.sqrt(np.mean(signal**2))
+        noise_rms = np.sqrt(np.mean(noise**2))
+        snr = signal_rms/noise_rms
+        snr_with_frequency[i] = snr
+        #
+        wave_filtered = phase(wave_filtered)
+        c_array, wave_filtered  = gen_c_array(tt,T,wave_filtered,distance,False,minv,maxv)
+        inds = np.argsort(c_array)
+        c_array = c_array[inds]
+        wave_filtered = wave_filtered[inds]
+        c_f_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
+    return c_array_interp, central_frequencies, c_f_array, snr_with_frequency
+
+def hff_worker(key,egf_trace,distance,fmin,fSettings):
+    c_array_interp, central_frequencies, c_f_array, snr_with_frequency = high_freq_ftan(egf_trace,distance,fmin,fSettings)
+    return key, distance, c_array_interp, central_frequencies, c_f_array
 
 #######################################################################################################
 #                                            Reional FTAN                                             #
@@ -556,9 +779,10 @@ def define_peaks(c_T):
         c_T_out[inds,i] = 1
     return c_T_out
 
-def regional_dispersion_worker(egf_path,distance,fSettings,vel_type,wave_num):
-    egf_trace = obspy.read(egf_path)
-    egf_trace = egf_trace[0]
+def regional_dispersion_worker(egf_path,distance,fSettings,vel_type,wave_num,load_matrix):
+    if not load_matrix:
+        egf_trace = obspy.read(egf_path)
+        egf_trace = egf_trace[0]
     if vel_type == "group":
         do_group = True
     else:
@@ -573,24 +797,29 @@ def regional_dispersion_worker(egf_path,distance,fSettings,vel_type,wave_num):
     c_T_array_shape = (len(np.arange(minv,maxv+dv,dv)),len(np.arange(minT,maxT,dT)))
     c_T_out = np.zeros((c_T_array_shape[0],c_T_array_shape[1],2))
     #
-    snr = calc_snr(egf_trace,distance)
-    maxtime = distance/2000
-    lenTrace = len(egf_trace.data)/egf_trace.stats["sampling_rate"]
-    if snr > 2.6 and maxtime < lenTrace:
-        T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,do_group=do_group)
-        c_T_array = define_peaks(c_T_array)
-        #
-        for i in range(len(c)):
-            for j in range(len(T)):
-                if c[i]*1000*T[j] <= distance/wave_num:
-                    c_T_out[i,j,0] = float(c_T_array[i,j])
-                    c_T_out[i,j,1] = 1
-                else:
-                    c_T_out[i,j,0] = 0
-                    c_T_out[i,j,1] = 0
+    if load_matrix:
+        ftan_grid = xr.load_dataarray(egf_path,engine="netcdf4")
+        T = ftan_grid.coords["period"].data
+        c = ftan_grid.coords["velocity"].data
+        c_T_array = ftan_grid.data
+    else:
+        snr = calc_snr(egf_trace,distance)
+        maxtime = distance/2000
+        lenTrace = len(egf_trace.data)/egf_trace.stats["sampling_rate"]
+        T, tt, c, c_T_array, snr_with_period = FTAN(egf_trace,distance,fSettings,do_group=do_group)
+    c_T_array = define_peaks(c_T_array)
+    #
+    for i in range(len(c)):
+        for j in range(len(T)):
+            if c[i]*1000*T[j] <= distance/wave_num:
+                c_T_out[i,j,0] = float(c_T_array[i,j])
+                c_T_out[i,j,1] = 1
+            else:
+                c_T_out[i,j,0] = 0
+                c_T_out[i,j,1] = 0
     return c_T_out
 
-def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wave_num=2):
+def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,load_matrix=False,wave_num=2):
     """
     
     """
@@ -612,7 +841,7 @@ def regional_dispersion(egf_pathlist,distance_list,fSettings,vel_type,threads,wa
         for i in range(len(egf_pathlist)):
             egf_path = egf_pathlist[i]
             distance = distance_list[i]
-            p = pool.apply_async(regional_dispersion_worker,args=(egf_path,distance,fSettings,vel_type,wave_num))
+            p = pool.apply_async(regional_dispersion_worker,args=(egf_path,distance,fSettings,vel_type,wave_num,load_matrix))
             procs.append(p)
         print("All FTAN processes running...")
         count=1
@@ -676,14 +905,17 @@ def gen_curve_from_regional_period(T,c_lists,c_regional,T_regional,maxT,grad_thr
         if T_ind > max_T_ind:
             notEnd = False
         else:
-            new_c = c_lists[T_ind][find_closest(c_lists[T_ind],c)]
-            diff = abs(new_c-c)
-            if diff > grad_threshold:
+            try:
+                new_c = c_lists[T_ind][find_closest(c_lists[T_ind],c)]
+                diff = abs(new_c-c)
+                if diff > grad_threshold:
+                    notEnd = False
+                else:
+                    c = float(new_c)
+                    T_disp.append(T[T_ind])
+                    c_disp.append(c)
+            except:
                 notEnd = False
-            else:
-                c = float(new_c)
-                T_disp.append(T[T_ind])
-                c_disp.append(c)
     # Look decreasing periods
     T_ind = int(T_ind_start)
     c = c_lists[T_ind][c_ind_start]
@@ -693,23 +925,28 @@ def gen_curve_from_regional_period(T,c_lists,c_regional,T_regional,maxT,grad_thr
         if T_ind < 0:
             notEnd = False
         else:
-            new_c = c_lists[T_ind][find_closest(c_lists[T_ind],c)]
-            diff = abs(new_c-c)
-            if diff > grad_threshold:
+            try:
+                new_c = c_lists[T_ind][find_closest(c_lists[T_ind],c)]
+                diff = abs(new_c-c)
+                if diff > grad_threshold:
+                    notEnd = False
+                else:
+                    c = float(new_c)
+                    T_disp = [T[T_ind]] + T_disp
+                    c_disp = [c] + c_disp
+            except:
                 notEnd = False
-            else:
-                c = float(new_c)
-                T_disp = [T[T_ind]] + T_disp
-                c_disp = [c] + c_disp
     return np.array(T_disp), np.array(c_disp)
 
-def pick_regional(c,T,c_T,plotfile):
+def pick_regional(c,T,c_T,plotfile,c_std,T_std):
     """Input: Unsmoothed output from regional dispersion file"""
-    from scipy.ndimage.filters import gaussian_filter
+    from scipy.ndimage import gaussian_filter
     # for i in range(len(T)):
     #     c_T[:,i] = (c_T[:,i]-min(c_T[:,i]))/(max(c_T[:,i]-min(c_T[:,i])))
-    std = 0.07/(c[1]-c[0])
-    c_T = gaussian_filter(c_T,std,order=0)
+    c_std = c_std/(c[1]-c[0])
+    c_T = gaussian_filter(c_T,c_std,order=0,axes=0)
+    T_std = T_std/(T[1]-T[0])
+    c_T = gaussian_filter(c_T,T_std,order=0,axes=1)
     c_peak_list = c_peaks(c,c_T)
     T_scatter, c_scatter = c_peaks_scatter(T,c_peak_list)
     fig = plt.figure(figsize=(1080/180,1080/180),dpi=180,constrained_layout=True)
@@ -731,10 +968,15 @@ def pick_regional(c,T,c_T,plotfile):
     plt.close()
     print(c_click)
     print(T_click)
-    c_peak_list = add_to_peaks(T_click[:-1],c_click[:-1],T,c_peak_list)
-    T_scatter, c_scatter = c_peaks_scatter(T,c_peak_list)
+    # c_peak_list = add_to_peaks(T_click[:-1],c_click[:-1],T,c_peak_list)
+    # T_scatter, c_scatter = c_peaks_scatter(T,c_peak_list)
     grad_thresh = 0.4*abs(T[1]-T[0])
     T_disp,c_disp = gen_curve_from_regional_period(T,c_peak_list,c_click[-1],T_click[-1],60,grad_thresh)
+    minT = min((T_click[-1],T_click[-2]))
+    maxT = max((T_click[-1],T_click[-2]))
+    condition = [minT <= Ti <= maxT for Ti in T_disp]
+    inds = np.where(condition)
+    T_disp, c_disp = T_disp[inds], c_disp[inds]
     fig = plt.figure(figsize=(1080/180,1080/180),dpi=180,constrained_layout=True)
     plt.pcolormesh(T,c,c_T,cmap=plt.get_cmap("rainbow"),zorder=1) # type: ignore
     plt.scatter(T_scatter,c_scatter,marker=".",color="black",s=0.7,picker=True) # type: ignore
@@ -803,34 +1045,50 @@ def conect_points_v2(T_list,c_list,pick1,pick2):
             c_out.append(next_c)
     return np.array(Tl), np.array(c_out)
 
-def auto_phase_picker(job,regional_period,regional_phasevel,fSettings,stopping_threshold,do_group):
+def auto_phase_picker(job,regional_period,regional_phasevel,fSettings,stopping_threshold,use_matricies):
     station_pair, egf_path, distance = job
     maxT = distance/6000
     #
-    decreasing_threshold, increasing_threshold = stopping_threshold
+    starting_threshold, decreasing_threshold, increasing_threshold, snr_threshold = stopping_threshold
     #
-    egf_trace = obspy.read(egf_path)
-    egf_trace = egf_trace[0]
-    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=1,do_group=do_group)
+    if use_matricies:
+        ftan_grid = xr.load_dataarray(egf_path,engine="netcdf4")
+        T = ftan_grid.coords["period"].data
+        c = ftan_grid.coords["velocity"].data
+        c_T_array = ftan_grid.data
+        snr_path = egf_path.split(".")[0] + "_snr.npy"
+        snr_with_period = np.load(snr_path)
+    else:
+        egf_trace = obspy.read(egf_path)
+        egf_trace = egf_trace[0]
+        T, tt, c, c_T_array, snr_with_period = FTAN(egf_trace,distance,fSettings,threads=1,do_group=False)
     #
     c_peak_list = c_peaks(c,c_T_array)
     #
     pick_c = []
     pick_T = []
+    pick_snr = []
     for i in range(len(T)): # Itterate backwards through the periods
         i = -i -1
         period = T[i]
+        snr = snr_with_period[i]
+        # print(snr)
         if period < maxT: # When period is less that the maximum period determined by lamda/2 start picking
             if pick_c == []: # pick first based on reference curve
                 regional_c = np.interp(period,regional_period,regional_phasevel)
                 previous_c = c_peak_list[i][find_closest(c_peak_list[i],regional_c)]
-                pick_c.append(float(previous_c))
-                pick_T.append(float(period))
+                diff = np.abs(regional_c-previous_c)
+                if diff > starting_threshold:
+                    return station_pair, pick_T,pick_c
+                if snr > snr_threshold:
+                    pick_c.append(float(previous_c))
+                    pick_T.append(float(period))
             else: # Pick next based on previous velocity
                 new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
                 if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
-                    pick_c.append(float(new_c))
-                    pick_T.append(float(period))
+                    if snr > snr_threshold:
+                        pick_c.append(float(new_c))
+                        pick_T.append(float(period))
                     previous_c = float(new_c)
                 else: # if jump is too high return without short periods
                     pick_c = np.array(pick_c)
@@ -847,46 +1105,190 @@ def auto_phase_picker(job,regional_period,regional_phasevel,fSettings,stopping_t
     pick_T = pick_T[inds]
     return station_pair, pick_T, pick_c
 
-def auto_group_picker(job,regional_period,regional_phasevel,fSettings,stopping_threshold,do_group=True):
+def auto_group_picker_v1(job,regional_period,regional_groupvel,fSettings,stopping_threshold,use_matricies):
     station_pair, egf_path, distance = job
     maxT = distance/6000
     #
-    decreasing_threshold, increasing_threshold = stopping_threshold
+    decreasing_threshold, increasing_threshold, snr_threshold = stopping_threshold
     #
-    egf_trace = obspy.read(egf_path)
-    egf_trace = egf_trace[0]
-    T, tt, c, c_T_array = FTAN(egf_trace,distance,fSettings,threads=1,do_group=do_group)
+    if use_matricies:
+        ftan_grid = xr.load_dataarray(egf_path,engine="netcdf4")
+        T = ftan_grid.coords["period"].data
+        c = ftan_grid.coords["velocity"].data
+        c_T_array = ftan_grid.data
+        snr_file = egf_path[:-3] + "_snr.npy"
+        snr_with_period = np.load(snr_file)
+    else:
+        egf_trace = obspy.read(egf_path)
+        egf_trace = egf_trace[0]
+        T, tt, c, c_T_array, snr_with_period = FTAN(egf_trace,distance,fSettings,threads=1,do_group=True)
     #
-    c_peak_list = c_peaks(c,c_T_array)
+    # c_peak_list = c_peaks(c,c_T_array)
     #
     pick_c = []
     pick_T = []
-    for i in range(len(T)): # Itterate backwards through the periods
-        i = -i -1
-        period = T[i]
-        if period < maxT: # When period is less that the maximum period determined by lamda/2 start picking
-            if pick_c == []: # pick first based on maximum amplitude at maxT
-                regional_c = c[int(np.argmax(c_T_array[:,i]))]
-                previous_c = c_peak_list[i][find_closest(c_peak_list[i],regional_c)]
-                pick_c.append(float(previous_c))
-                pick_T.append(float(period))
-            else: # Pick next based on previous velocity
-                new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
-                if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
-                    pick_c.append(float(new_c))
+    pick_snr = []
+    try:
+        for i in range(len(T)): # Itterate backwards through the periods
+            i = -i -1
+            period = T[i]
+            snr = snr_with_period[i]
+            if period < maxT: # When period is less that the maximum period determined by lamda/2 start picking
+                if pick_c == []: # pick first based on maximum amplitude at maxT
+                    previous_c = c[int(np.argmax(c_T_array[:,i]))]
+                    pick_c.append(float(previous_c))
                     pick_T.append(float(period))
-                    previous_c = float(new_c)
-                else: # if jump is too high return without short periods
-                    pick_c = np.array(pick_c)
-                    pick_T = np.array(pick_T)
-                    inds = np.argsort(pick_T)
-                    pick_c = pick_c[inds]
-                    pick_T = pick_T[inds]
-                    return station_pair, pick_T, pick_c
+                    pick_snr.append(float(snr))
+                else: # Pick next maximum
+                    # new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
+                    new_c = c[int(np.argmax(c_T_array[:,i]))]
+                    if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
+                        pick_c.append(float(new_c))
+                        pick_T.append(float(period))
+                        pick_snr.append(float(snr))
+                        previous_c = float(new_c)
+                    else: # if jump is too high return without short periods
+                        pick_c = np.array(pick_c)
+                        pick_T = np.array(pick_T)
+                        pick_snr = np.array(pick_snr)
+                        inds = np.argsort(pick_T)
+                        pick_c = pick_c[inds]
+                        pick_T = pick_T[inds]
+                        pick_snr = pick_snr[inds]
+                        pick_snr = np.where(pick_snr > snr_threshold)
+                        pick_c = pick_c[pick_snr]
+                        pick_T = pick_T[pick_snr]
+                        return station_pair, pick_T, pick_c
+    except Exception as e:
+        print(e)
+        return station_pair, np.array([]), np.array([])
     #
     pick_c = np.array(pick_c)
     pick_T = np.array(pick_T)
+    pick_snr = np.array(pick_snr)
     inds = np.argsort(pick_T)
     pick_c = pick_c[inds]
     pick_T = pick_T[inds]
+    pick_snr = pick_snr[inds]
+    pick_snr = np.where(pick_snr > snr_threshold)
+    pick_c = pick_c[pick_snr]
+    pick_T = pick_T[pick_snr]
     return station_pair, pick_T, pick_c
+
+def auto_group_picker(job,regional_period,regional_groupvel,fSettings,stopping_threshold,use_matricies=False):
+    station_pair, egf_path, distance = job
+    maxT = distance/6000
+    distkm = distance/1000
+    #
+    egf_trace = obspy.read(egf_path)
+    egf_trace = egf_trace[0]
+    #
+    trace = egf_trace.copy()
+    egf = trace.data
+    fs = trace.stats["sampling_rate"]
+    # Generate time and period arrays
+    minT = fSettings[0]
+    maxT = fSettings[1]
+    dT = fSettings[2]
+    bandwidth = fSettings[3]
+    width_type = fSettings[4]
+    dv = fSettings[5]
+    minv = fSettings[6]
+    maxv = fSettings[7]
+    divalpha = fSettings[8]
+    delta = 1/fs
+    #
+    decreasing_threshold, increasing_threshold, snr_threshold = stopping_threshold
+    #
+    tt = np.arange(delta,len(egf)*delta+delta,delta)
+    central_periods = np.arange(minT,maxT,dT)
+    snr_with_period = np.zeros_like(central_periods)
+    #
+    alpha = distkm/divalpha
+    amplitude = group_ftn(trace.data,delta,central_periods,alpha)
+    c_array = distkm / tt
+    inds = np.argsort(c_array)
+    c_array = c_array[inds]
+    #
+    pick_u = []
+    pick_T = []
+    #
+    for i,T in enumerate(central_periods):
+        wave_filtered = amplitude[i,:]
+        # mv = np.max(wave_filtered)
+        imax = np.argmax(wave_filtered)
+        U = distkm/tt[imax]
+        lb_i = imax
+        while lb_i > 0 and wave_filtered[lb_i] > wave_filtered[imax]*0.8:
+            lb_i = lb_i - 1
+        ub_i = imax
+        while ub_i < len(wave_filtered) and wave_filtered[ub_i] > wave_filtered[imax]*0.8:
+            ub_i = ub_i + 1
+        signal = np.sqrt(np.mean(np.abs(wave_filtered[lb_i:ub_i])**2))
+        noise = []
+        for a in wave_filtered[:lb_i]:
+            noise.append(a)
+        for a in wave_filtered[ub_i:]:
+            noise.append(a)
+        noise = np.sqrt(np.mean(np.abs(noise)**2))
+        # snr = np.sqrt(signal/noise)
+        snr = signal/noise
+        snr_with_period[i] = snr
+        if snr > snr_threshold and minv < U < maxv:
+            pick_u.append(U)
+            pick_T.append(T)
+    return station_pair, np.array(pick_T), np.array(pick_u)
+
+    
+def high_freq_auto_phase_picker(job,fSettings,stopping_threshold):
+    """
+    
+    """
+    from scipy.ndimage import gaussian_filter
+    # Load settings
+    station_pair,egf_path,distance,ref_vel,ref_freq = job
+    starting_threshold, decreasing_threshold, increasing_threshold, snr_threshold = stopping_threshold
+    #
+    # Load trace for EGF
+    egf_trace = obspy.read(egf_path)
+    egf_trace = egf_trace[0]
+    c, central_frequencies, c_f_array, snr_with_frequency = high_freq_ftan(egf_trace,distance,ref_freq,fSettings)
+    #
+    c_peak_list = c_peaks(c,c_f_array)
+    #
+    pick_c = []
+    pick_f = []
+    #
+    try:
+        for i in range(len(central_frequencies)): # Itterate up through frequencies
+            f = central_frequencies[i]
+            snr = snr_with_frequency[i]
+            # print(snr)
+            if pick_c == []:
+                previous_c = c_peak_list[i][find_closest(c_peak_list[i],ref_vel)]
+                diff = np.abs(ref_vel-previous_c)
+                if diff > starting_threshold:
+                    return station_pair, pick_f,pick_c
+                if snr > snr_threshold:
+                    pick_c.append(float(previous_c))
+                    pick_f.append(float(f))
+            else: # Pick next based on previous velocity
+                new_c = c_peak_list[i][find_closest(c_peak_list[i],previous_c)]
+                if -decreasing_threshold < new_c-previous_c < increasing_threshold: # if jump is within bounds save and pick next
+                    if snr > snr_threshold:
+                        pick_c.append(float(new_c))
+                        pick_f.append(float(f))
+                    previous_c = float(new_c)
+                else: # if jump is too high return without short periods
+                    pick_c = np.array(pick_c)
+                    pick_f = np.array(pick_f)
+                    return station_pair, pick_f, pick_c
+    except Exception as e:
+        print(e)
+        return station_pair, np.array([]), np.array([])
+    #
+    pick_c = np.array(pick_c)
+    pick_c = gaussian_filter(pick_c,4)
+    pick_f = np.array(pick_f)
+    return station_pair, pick_f, pick_c
+    
