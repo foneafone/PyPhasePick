@@ -10,7 +10,8 @@ import json
 import multiprocessing
 import pandas as pd
 
-from EgfLib import FTAN, make_c_T_lists, peak_array, find_closest_v2, conect_points_v2
+from pyphasepick.frequencytimeanalisys import FTAN
+from pyphasepick.picking import make_c_T_lists, peak_array, find_closest_v2, conect_points_v2
 
 #######################################################################
 #                             Settings                                #

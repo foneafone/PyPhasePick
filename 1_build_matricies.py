@@ -15,7 +15,7 @@ except ImportError:
     def tqdm(x):
         return x
 
-from EgfLib import calc_and_save_ftan
+from pyphasepick.frequencytimeanalisys import calc_and_save_ftan
 
 #######################################################################
 #                             Settings                                #

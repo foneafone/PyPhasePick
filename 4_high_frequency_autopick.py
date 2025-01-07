@@ -9,7 +9,7 @@ import multiprocessing
 import pandas as pd
 from tqdm import tqdm
 
-from EgfLib import high_freq_auto_phase_picker
+from pyphasepick.picking import high_freq_auto_phase_picker
 
 #######################################################################
 #                             Settings                                #

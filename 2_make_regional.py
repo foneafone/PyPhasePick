@@ -10,7 +10,7 @@ import json
 import multiprocessing
 import pandas as pd
 
-from EgfLib import regional_dispersion, pick_regional
+from pyphasepick.picking import regional_dispersion, pick_regional
 
 #######################################################################
 #                             Settings                                #

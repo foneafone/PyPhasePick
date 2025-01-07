@@ -8,7 +8,7 @@ import json
 import multiprocessing
 import pandas as pd
 
-from EgfLib import FTAN, station_pair_stack, egf_worker, make_stack_jobs
+from pyphasepick.stackingandegf import egf_worker, make_stack_jobs
 
 
 #######################################################################
