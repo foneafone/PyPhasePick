@@ -317,7 +317,7 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     dv = fSettings[5]
     minv = fSettings[6]
     maxv = fSettings[7]
-    divalpha = fSettings[8]
+    # divalpha = fSettings[8]
     delta = 1/fs
     #
     distkm = distance/1000
@@ -342,32 +342,33 @@ def FTAN(egf_trace,distance,fSettings,threads=1,do_group=False):
     #
     # Generate t-T array and c-T array
     if do_group:
-        alpha = distkm/divalpha
-        amplitude = group_ftn(trace.data,delta,central_periods,alpha)
-        c_array = distkm / tt
-        inds = np.argsort(c_array)
-        c_array = c_array[inds]
-        for i in range(len(central_periods)):
-            wave_filtered = amplitude[i,:]
-            # mv = np.max(wave_filtered)
-            imax = np.argmax(wave_filtered)
-            lb_i = imax
-            while wave_filtered[lb_i] > wave_filtered[imax]*0.8:
-                lb_i = lb_i - 1
-            ub_i = imax
-            while wave_filtered[ub_i] > wave_filtered[imax]*0.8:
-                ub_i = ub_i + 1
-            signal = np.sum(np.abs(wave_filtered[lb_i:ub_i])**2)
-            signal = signal/signal_time
-            noise = np.sum(np.abs(wave_filtered[:lb_i]))**2 + np.sum(np.abs(wave_filtered[ub_i:]))**2
-            noise = noise/(total_time-signal_time)
-            # snr = np.sqrt(signal/noise)
-            snr = signal/noise
-            snr_with_period[i] = snr
-            # wave = wave[inds]/np.max(wave[inds])
-            wave_filtered = wave_filtered[inds]
-            c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
-        # c_T_array = c_T_array/np.max(c_T_array)
+        raise ValueError("Group velocity calculation is not supported - appologies for the inconvenience.")
+        # alpha = distkm/divalpha
+        # amplitude = group_ftn(trace.data,delta,central_periods,alpha)
+        # c_array = distkm / tt
+        # inds = np.argsort(c_array)
+        # c_array = c_array[inds]
+        # for i in range(len(central_periods)):
+        #     wave_filtered = amplitude[i,:]
+        #     # mv = np.max(wave_filtered)
+        #     imax = np.argmax(wave_filtered)
+        #     lb_i = imax
+        #     while wave_filtered[lb_i] > wave_filtered[imax]*0.8:
+        #         lb_i = lb_i - 1
+        #     ub_i = imax
+        #     while wave_filtered[ub_i] > wave_filtered[imax]*0.8:
+        #         ub_i = ub_i + 1
+        #     signal = np.sum(np.abs(wave_filtered[lb_i:ub_i])**2)
+        #     signal = signal/signal_time
+        #     noise = np.sum(np.abs(wave_filtered[:lb_i]))**2 + np.sum(np.abs(wave_filtered[ub_i:]))**2
+        #     noise = noise/(total_time-signal_time)
+        #     # snr = np.sqrt(signal/noise)
+        #     snr = signal/noise
+        #     snr_with_period[i] = snr
+        #     # wave = wave[inds]/np.max(wave[inds])
+        #     wave_filtered = wave_filtered[inds]
+        #     c_T_array[:,i] = np.interp(c_array_interp,c_array,wave_filtered)
+        # # c_T_array = c_T_array/np.max(c_T_array)
     else:
         if threads != 1 and __name__=="__main__":
             procs = []

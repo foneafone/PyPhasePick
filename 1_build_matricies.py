@@ -21,21 +21,26 @@ from pyphasepick.frequencytimeanalisys import calc_and_save_ftan
 #                             Settings                                #
 #######################################################################
 
-stations_csv = "/raid2/jwf39/askja/notebooks/all_stations_sep23.csv"
-stationsdf = pd.read_csv(stations_csv)
+# CSV file containing all of the station infomation (see example for details)
+stations_csv = "./example/all_stations.csv"
 
-stationpair_csv = "/raid2/jwf39/askja/notebooks/all_station_pairs_sep23.csv"
-stationpairdf = pd.read_csv(stationpair_csv)
+# CSV file containing all of the station pair infomation (see example for details)
+stationpair_csv = "./example/all_station_pairs.csv"
 
-egf_dir = "/raid2/jwf39/askja/sep11_sep23/pws"
+# Directory that the empirical Green's functions are saved in
+egf_dir = "./example/pws"
 
-vel_type = "phase" # "phase" or "group"
+# Component to compute (ZZ, TT, RR)
 comp = "ZZ"
 
-net = "AJ"
+# Gives option to ignore network code and replace with a new code
+#   Useful if some stations have their network changed over time
+#   If used the replacement code must be listed in stations_csv rather than the original
+ignore_network = True
+replacement_net_code = "AJ"
 
-min_dist = 2*3000*2
-snr_threshold = 2.0
+# Minimum interstation distance to compute for in meters
+min_dist = 12_000
 
 #Filter Settings
 #Period Axis
@@ -49,17 +54,21 @@ maxv = 3.5
 #Filter width
 width_type = "dependent" # "dependent" or "fixed"
 bandwidth = 0.4 # If dependent this will be 0.4*central_period and if fixed will be 0.4 s
-divalpha = 5.0
 
-fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv,divalpha)
+# The directory to save the output FTAN matricies
+outdir = "./example/ftan"
 
-outdir = f"/raid2/jwf39/askja/sep11_sep23/ftan"
-
-threads = 15
+# Number of threads Pool object will use to parallelise the process
+threads = 4
 
 #######################################################################
 #                               Main                                  #
 #######################################################################
+
+stationsdf = pd.read_csv(stations_csv)
+stationpairdf = pd.read_csv(stationpair_csv)
+vel_type = "phase"
+fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv)
 
 if __name__=="__main__":
     os.makedirs(f"{outdir}",exist_ok=True)
@@ -78,10 +87,15 @@ if __name__=="__main__":
     for row in stationpairdf.iterrows():
         if row[1][HorV]:
             sta1 = row[1]["station1"]
+            net1 = row[1]["net1"]
             sta2 = row[1]["station2"]
+            net2 = row[1]["net2"]
             dist = row[1]["gcm"]
+            if ignore_network:
+                net1 = replacement_net_code
+                net2 = replacement_net_code
             #
-            egf_path = f"{egf_dir}/EGF/{comp}/{net}_{sta1}_{net}_{sta2}.mseed"
+            egf_path = f"{egf_dir}/EGF/{comp}/{net1}_{sta1}_{net2}_{sta2}.mseed"
             #
             if os.path.isfile(egf_path) and dist >= min_dist:
                 #

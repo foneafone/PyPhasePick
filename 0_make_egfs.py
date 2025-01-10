@@ -16,34 +16,48 @@ from pyphasepick.stackingandegf import egf_worker, make_stack_jobs
 #######################################################################
 
 if __name__=="__main__":
-    # cc_path_structure = "/raid2/jwf39/askja/STACKS/01/001_DAYS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
-    cc_path_structure = "/raid2/jwf39/askja/ALL_STACKS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
+    # Path structure of cross correlation output from msnoise
+    # COMP = component (NN, EE, ZZ, etc.)
+    # NET1/2 = Network
+    # STA1/2 = Station
+    # YEAR = Year
+    # MM = Month (03, 11, etc.)
+    # DD = Day (04, 24, etc.)
+    cc_path_structure = "./example/STACKS/COMP/NET1_STA1_NET2_STA2/YEAR-MM-DD.MSEED"
 
-    # stations_csv = "/raid2/jwf39/askja/notebooks/pre_21_all_stations.csv"
-    stations_csv = "/raid2/jwf39/askja/notebooks/all_stations_sep23.csv"
+    # CSV file containing all of the station infomation (see example for details)
+    stations_csv = "./example/all_stations.csv"
 
+    # Gives option to ignore network code and replace with a new code
+    #   Useful if some stations have their network changed over time
+    #   If used the replacement code must be listed in stations_csv rather than the original
     ignore_network = True
     replacement_net_code = "AJ"
 
+    # Output components to compute
     comps = ("ZZ","RR","TT")
-    # comps = ("ZZ")
-    startdate = "1970-01-01" # "2021-08-01" or "1970-01-01"
-    enddate = "2035-01-01" # "2021-07-01" or "2035-01-01"
 
+    # Start and end date to stack between
+    startdate = "1970-01-01" 
+    enddate = "2040-01-01" 
+
+    # Type of stacking used - can be phase weighted stacking (pws) or linear
     stack_type="pws" # linear or pws
-    # stack_type = "linear"
+    # Power of the phase weighted stack
     pws_power = 2
 
+    # Save the output cross correlations as well as the empirical Green's functions
     save_cc = True
 
+    # Re-stack cross correlations - can be set to false to stop the re-calculation
+    #   of EGFs that already exist in the output directory
     remake = True
 
     #Will save in this directory:
-    # outdir = f"/raid1/jwf39/askja/sep11_jul21/pws"
-    outdir = f"/raid2/jwf39/askja/sep11_sep23/pws"
-    # outdir = f"/raid2/jwf39/askja/aug21_sep23/pws"
+    outdir = f"./example/pws"
 
-    threads = 20
+    # Number of threads that the Pool will used to parallelise the jobs
+    threads = 4
 
 #######################################################################
 #                               Main                                  #

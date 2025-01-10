@@ -16,23 +16,23 @@ from pyphasepick.picking import regional_dispersion, pick_regional
 #                             Settings                                #
 #######################################################################
 
-stations_csv = "/raid2/jwf39/askja/notebooks/all_stations_sep23.csv"
-stationsdf = pd.read_csv(stations_csv)
+# CSV file containing all of the station infomation (see example for details)
+stations_csv = "./example/all_stations.csv"
 
-stationpair_csv = "/raid2/jwf39/askja/notebooks/all_station_pairs_sep23.csv"
-stationpairdf = pd.read_csv(stationpair_csv)
+# CSV file containing all of the station pair infomation (see example for details)
+stationpair_csv = "./example/all_station_pairs.csv"
 
-egf_dir = "/raid2/jwf39/askja/sep11_sep23/pws"
-matrix_dir = "/raid2/jwf39/askja/sep11_sep23/ftan"
+# Directory that the empirical Green's functions are saved in
+egf_dir = "./example/pws"
 
-import sys
-args = sys.argv
+# Directory that the FTAN matricies are saved in
+matrix_dir = "./example/ftan"
 
-# if len(sys.argv) > 1:
-#     vel_type = sys.argv[1]
-#     comp = sys.argv[2]
-# else:
-vel_type = "group" # "phase" or "group"
+
+# Directory that the empirical Green's functions are saved in
+egf_dir = "./example/pws"
+
+# Component to compute (ZZ, TT, RR)
 comp = "ZZ"
 
 net = "AJ"
@@ -71,6 +71,9 @@ threads = 15
 #######################################################################
 #                               Main                                  #
 #######################################################################
+
+stationsdf = pd.read_csv(stations_csv)
+stationpairdf = pd.read_csv(stationpair_csv)
 
 if __name__=="__main__":
     if use_outfile:
