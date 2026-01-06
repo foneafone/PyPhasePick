@@ -1,3 +1,4 @@
 filetemplate,YEAR/DAY/YEARDAY_*_STA_COMP.m
 starttime,2020-01-01T00:00:00
 endtime,2021-01-01T00:00:00
+fileformat,MSEED
