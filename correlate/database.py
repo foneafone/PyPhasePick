@@ -54,7 +54,7 @@ class CorrelateLiteDB():
         #
         self.cur.execute("SELECT name FROM sqlite_master")
         res = self.cur.fetchall()
-        print(res)
+        # print(res)
         if res == []:
             # Database is empty add new tables
             self.build_new_db_tables()
@@ -70,44 +70,35 @@ class CorrelateLiteDB():
         self.cur.close()
         self.con.close()
     
+    def sql_execute(self,comand):
+        self.cur.execute(comand)
+        self.con.commit()
+    
     def cc_config_value(self,*args):
         """
         Simple function to query the corelateconfig table for specific values
         """
         return [self.cur.execute(f"SELECT value FROM correlateconfig WHERE label LIKE '{arg}'").fetchall()[0][0] for arg in args]
-    
-    def print_db(self,table,**kwargs):
-        """
-        Docstring for print_db
-        
-        :param self: Description
-        :param table: Description
-        """
-        #, station, network, starttime, endtime, maxgap
-        cmd = f"SELECT * FROM {table}"
-        print(cmd)
-        values = self.cur.execute(cmd).fetchall()
-        match table:
-            case "data":
-                print("filepath station network starttime endtime maxgap")
-                for row in values:
-                    filepath,station,network,starttime,endtime,maxgap = row
-                    print(f"{filepath:64} {station:5} {network:2}  {starttime}  {endtime}  {maxgap}")
-            case "stations":
-                print("station network")
-                for row in values:
-                    station,network = row
-                    print(f"{station:7} {network:7}")
         
     def build_new_db_tables(self):
         """
         Builds the tables if the db is empty
         """
-        self.cur.execute("CREATE TABLE data(filepath,station,network,starttime,endtime,maxgap)")
-        self.cur.execute("CREATE TABLE stations(station,network)")
-        self.cur.execute("CREATE TABLE jobs(filepath2,network1,station1,filepath1,network2,station2,date)")
+        self.cur.execute("CREATE TABLE data(filepath,station,network,channel,starttime,endtime,maxgap)")
+        self.cur.execute("CREATE TABLE stations(station,network,lat,lon)")
         self.cur.execute("CREATE TABLE correlateconfig(label,value)")
         self.cur.execute("CREATE TABLE pickconfig(label,value)")
+        self.con.commit()
+        #
+        self.build_job_table()
+    
+    def build_job_table(self):
+        self.cur.execute("CREATE TABLE jobs(filepath1,network1,station1,filepath2,network2,station2,date,status)")
+        self.con.commit()
+    
+    def reset_job_table(self):
+        self.cur.execute("DROP TABLE jobs")
+        self.build_job_table()
         self.con.commit()
     
     def build_correlate_config(self,input_file:pathlib.Path=None):
@@ -121,10 +112,42 @@ class CorrelateLiteDB():
         if input_file is None:
             script_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
             correlate_config_defaults = script_dir / "defaults" / "correlateconfig_defaults.csv"
-            config_values = np.loadtxt(correlate_config_defaults,delimiter=",",dtype=str)
+            # config_values = np.loadtxt(correlate_config_defaults,delimiter=",",dtype=str)
+            config_values = np.array(pd.read_csv(correlate_config_defaults,header=None))
             #
             self.cur.executemany("INSERT INTO correlateconfig VALUES(?,?)", config_values)
             self.con.commit()
+        
+    def print_db(self,table):
+        """
+        Print a specific table from the database
+        
+        :param self: db class instance
+        :param table: string of the table to print
+        """
+        #, station, network, starttime, endtime, maxgap
+        cmd = f"SELECT * FROM {table}"
+        values = self.cur.execute(cmd).fetchall()
+        print(f"There are {len(values)} rows in the {table} table")
+        match table:
+            case "data":
+                print("filepath station network channel starttime endtime maxgap")
+                print("-------- ------- ------- ------- --------- ------- ------")
+                for row in values:
+                    filepath,station,network,channel,starttime,endtime,maxgap = row
+                    print(f"{filepath:64} {station:5} {network:2}  {channel:3}  {starttime}  {endtime}  {maxgap}")
+            case "stations":
+                print("station network     lat      lon")
+                print("------- -------     ---      ---")
+                for row in values:
+                    station,network,lat,lon = row
+                    print(f"{station:7} {network:7} {lat:7} {lon:7}")
+            case "correlateconfig":
+                print("label         value    ")
+                print("-----         -----")
+                for row in values:
+                    label,value = row
+                    print(f"{label:13} {value}")
     
     ########################################################################################
     #                                    Scan Archive                                      #
@@ -205,21 +228,21 @@ class CorrelateLiteDB():
             for i in tqdm(range(total_number)):
                 result = queue.get()
                 if result is not None:
-                    station,network,filepath,starttime,endtime,maxgap = result
-                    rows.append((filepath,station,network,starttime.format_iris_web_service(),endtime.format_iris_web_service(),float(maxgap)))
+                    station,network,channel,filepath,starttime,endtime,maxgap = result
+                    rows.append((filepath,station,network,channel,starttime.format_iris_web_service(),endtime.format_iris_web_service(),float(maxgap)))
                     #
                     # Commit the SQL every 1000 insertions
                     count += 1
                     if count > 1000:
                         self.connect()
-                        self.con.executemany("INSERT INTO data(filepath,station,network,starttime,endtime,maxgap) VALUES (?,?,?,?,?,?)",rows)
+                        self.con.executemany("INSERT INTO data(filepath,station,network,channel,starttime,endtime,maxgap) VALUES (?,?,?,?,?,?,?)",rows)
                         self.con.commit()
                         self.disconnect()
                         count = 0
                         rows = []
             #
             self.connect()
-            self.con.executemany("INSERT INTO data(filepath,station,network,starttime,endtime,maxgap) VALUES (?,?,?,?,?,?)",rows)
+            self.con.executemany("INSERT INTO data(filepath,station,network,channel,starttime,endtime,maxgap) VALUES (?,?,?,?,?,?,?)",rows)
             self.con.commit()
             #
             for p in procs:
@@ -267,7 +290,7 @@ class CorrelateLiteDB():
         read_time = time.perf_counter()-start
         if len(st) == 1:
             # print(read_time, str(infile).split("/")[-1], st[0].stats.sampling_rate)
-            return (st[0].stats.station, st[0].stats.network, infile, st[0].stats.starttime, st[0].stats.endtime, 0)
+            return (st[0].stats.station, st[0].stats.network, st[0].stats.channel, infile, st[0].stats.starttime, st[0].stats.endtime, 0)
         elif len(st) == 0:
             print(f"Warning: File {infile} contains no traces")
             return None
@@ -292,7 +315,7 @@ class CorrelateLiteDB():
                     print(f"Warning: File {infile} contains jumbled data")
                     return None
             # print(read_time, str(infile).split("/")[-1], st[0].stats.sampling_rate)
-            return (prev_station, prev_network, infile, starttime, prev_endtime, np.max(gaps))
+            return (prev_station, prev_network, prev_channel, infile, starttime, prev_endtime, np.max(gaps))
     
     @staticmethod
     def day_scan(inputs):
@@ -319,14 +342,74 @@ class CorrelateLiteDB():
         return glob.glob(str(search_dir / filetemplate))
 
     ########################################################################################
-    #                                    New Jobs                                          #
+    #                                    Station list                                      #
     ########################################################################################
     
-    def new_jobs(self,station_csv):
+    def fill_station_db(self,station_csv=None):
         """
-        Docstring for new_jobs
+        Fills the station table using a supplied csv file that contains the columns titled
+        network, station, lat and lon. If no csv file is supplied then it finds all unique
+        station occurances within the data file.
+        
+        :param self: Instance of database class
+        :param station_csv: Path to pandas readable csv file that contains the columns 
+            'network', 'station', 'lat', 'lon'
+        """
+        # Get existing stations data
+        existing_data = np.array(self.cur.execute("SELECT network,station FROM stations").fetchall(),dtype=str)
+        existing_ids = make_station_ids(existing_data)
+        if station_csv is None:
+            # Fill from the available stations in the data table
+            stations_and_networks_from_data = np.array(self.cur.execute("SELECT network,station FROM data").fetchall(),dtype=str)
+            ids = make_station_ids(stations_and_networks_from_data)
+            #
+            # Sort and loop to extract unique station_network id strings
+            ids.sort()
+            unique_ids = []
+            current_id = ids[0]
+            for id in ids[1:]:
+                if id != current_id:
+                    unique_ids.append(current_id)
+                    current_id = id
+            #
+            # Split ids back to network and station
+            for id in unique_ids:
+                if not id in existing_ids:
+                    network,station = id.split("_")
+                    self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,0,0))
+            self.con.commit()
+        else:
+            # Fill from a station csv file
+            station_csv_df = pd.read_csv(station_csv)
+            ids = make_station_ids(np.array(station_csv_df[["network","station"]]))
+            stations = np.array(station_csv_df["station"])
+            networks = np.array(station_csv_df["network"])
+            lats = np.array(station_csv_df["lat"])
+            lons = np.array(station_csv_df["lon"])
+            for id,station,network,lat,lon in zip(ids,stations,networks,lats,lons):
+                if not id in existing_ids:
+                    self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,lat,lon))
+            self.con.commit()
+
+    ########################################################################################
+    #                                      Job list                                        #
+    ########################################################################################
+
+    def fill_job_list(self,reset:bool=False):
+        """
+        Docstring for fill_job_list
+
+        jobid structure = YEAR_JDAY_NET1_STA1_NET2_STA2 - where NET1_STA1 < NET2_STA2 (where the station ids are sorted)
         
         :param self: Description
-        :param station_csv: Description
+        :param reset: 
         """
+        if reset:
+            # Drop the old jobs table and repopulate
+            self.reset_job_table()
+            existing_ids = []
+        else:
+            # Load job ids from jobs table
+            existing_ids = make_job_ids(np.array(self.cur.execute("SELECT network1,station1,network2,station2,date FROM jobs").fetchall()))
+        #
         
