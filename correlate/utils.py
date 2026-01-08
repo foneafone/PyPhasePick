@@ -2,6 +2,7 @@
 Module containing a couple of utility functions
 """
 
+import numpy as np
 from obspy import UTCDateTime
 
 def mass_wildcard_replace(string,*args):
@@ -37,6 +38,9 @@ def make_station_ids(network_station_array):
         ids = []
     return ids
 
+def date2yrjday(date_list):
+    return np.array([f"{UTCDateTime(date).year}_{UTCDateTime(date).julday}" for date in date_list])
+
 def make_job_ids(job_array):
     """
     Make list of job ids from an extracted array
@@ -44,8 +48,16 @@ def make_job_ids(job_array):
     :param job_array: Description
     """
     if job_array.size != 0:
-        year_jday_list = [f"{UTCDateTime(date).year}_{UTCDateTime(date).julday}" for date in job_array[:,4]]
-        ids = [f"{year_jday}_{net1}_{sta1}_{net2}_{sta2}" for year_jday,net1,sta1,net2,sta2 in zip(year_jday_list,job_array[:,0],job_array[:,1],job_array[:,2],job_array[:,3])]
+        year_jday_list = date2yrjday(job_array[:,4])
+        ids = [f"{year_jday}_{net1}_{sta1}_{net2}_{sta2}_{comp}" for year_jday,net1,sta1,net2,sta2,comp in zip(year_jday_list,job_array[:,0],job_array[:,1],job_array[:,2],job_array[:,3],job_array[:,5])]
     else:
         ids = []
     return ids
+
+def find_comps_to_use(components_to_use):
+    """
+    Docstring for find_comps_to_use
+    
+    :param components_to_use: Description
+    """
+    

@@ -93,7 +93,7 @@ class CorrelateLiteDB():
         self.build_job_table()
     
     def build_job_table(self):
-        self.cur.execute("CREATE TABLE jobs(filepath1,network1,station1,filepath2,network2,station2,date,status)")
+        self.cur.execute("CREATE TABLE jobs(filepath1,network1,station1,filepath2,network2,station2,date,components,status)")
         self.con.commit()
     
     def reset_job_table(self):
@@ -148,6 +148,12 @@ class CorrelateLiteDB():
                 for row in values:
                     label,value = row
                     print(f"{label:13} {value}")
+            case "jobs":
+                print("filepath1 network1 station1 filepath2 network2 station2 date components status")
+                print(" ")
+                for row in values:
+                    filepath1,network1,station1,filepath2,network2,station2,date,components,status = row
+                    print(f"{filepath1:64} {network1:4} {station1:6} {filepath2:64} {network2:4} {station2:6} {date:9} {components:4} {status:2}")
     
     ########################################################################################
     #                                    Scan Archive                                      #
@@ -399,7 +405,7 @@ class CorrelateLiteDB():
         """
         Docstring for fill_job_list
 
-        jobid structure = YEAR_JDAY_NET1_STA1_NET2_STA2 - where NET1_STA1 < NET2_STA2 (where the station ids are sorted)
+        jobid structure = YEAR_JDAY_NET1_STA1_NET2_STA2_COMP - where NET1_STA1 < NET2_STA2 (where the station ids are sorted)
         
         :param self: Description
         :param reset: 
@@ -410,6 +416,100 @@ class CorrelateLiteDB():
             existing_ids = []
         else:
             # Load job ids from jobs table
-            existing_ids = make_job_ids(np.array(self.cur.execute("SELECT network1,station1,network2,station2,date FROM jobs").fetchall()))
+            existing_ids = make_job_ids(np.array(self.cur.execute("SELECT network1,station1,network2,station2,date,components FROM jobs").fetchall()))
         #
+        comps_to_compute,configmaxgap = self.cc_config_value("components","maxgap")
+        comps_to_compute = comps_to_compute.split(",")
+        unique_comps = []
+        for comps in comps_to_compute:
+            if len(comps) == 2:
+                if not comps[0] in unique_comps:
+                    unique_comps.append(comps[0])
+                if not comps[1] in unique_comps:
+                    unique_comps.append(comps[1])
+            else:
+                raise ValueError(f"The string {comps} is not a valid pair of components to compute")
+        #
+        # Get station ids from table
+        station_data = np.array(self.cur.execute("SELECT network,station FROM stations").fetchall(),dtype=str)
+        station_ids = make_station_ids(station_data)
+        station_ids.sort()
+        #
+        # Make unique station pair purmutations in sorted order
+        station_pair_ids = []
+        for i in range(len(station_ids)):
+            id1 = station_ids[0]
+            station_ids = station_ids[1:]
+            for id2 in station_ids:
+                station_pair_id = f"{id1}_{id2}"
+                station_pair_ids.append(station_pair_id)
+        #
+        for station_pair_id in tqdm(station_pair_ids):
+            net1,sta1,net2,sta2 = station_pair_id.split("_")
+            #
+            station1_data = {}
+            station2_data = {}
+            for comp in unique_comps:
+                data1 = self.find_all_data_and_sort(net1,sta1,comp,configmaxgap)
+                data2 = self.find_all_data_and_sort(net2,sta2,comp,configmaxgap)
+                #
+                station1_data[comp] = data1
+                station2_data[comp] = data2
+            #
+            rows = []
+            #
+            for component_pair in comps_to_compute:
+                comp1 = component_pair[0]
+                comp2 = component_pair[1]
+                #
+                data1 = station1_data[comp1]
+                data2 = station2_data[comp2]
+                #
+                if data1 is not None and data2 is not None:
+                    index1 = 0
+                    index2 = 0
+                    while index1 < data1.shape[0] and index2 < data2.shape[0]:
+                        filepath1, year_jday1 = data1[index1,:]
+                        filepath2, year_jday2 = data2[index2,:]
+                        if year_jday1 == year_jday2:
+                            #New Job - YEAR_JDAY_NET1_STA1_NET2_STA2_COMP
+                            # jobs(filepath1,network1,station1,filepath2,network2,station2,date,components,status)
+                            jobid = f"{year_jday1}_{net1}_{sta1}_{net2}_{sta2}_{component_pair}"
+                            if not jobid in existing_ids:
+                                row = [filepath1,net1,sta1,filepath2,net2,sta2,year_jday1,component_pair,"T"]
+                                rows.append(row)
+                                filepath1,network1,station1,filepath2,network2,station2,date,components,status = row
+                                print(f"{filepath1:64} {network1:4} {station1:6} {filepath2:64} {network2:4} {station2:6} {date:9} {components:4} {status:2}")
+                            index1 += 1
+                            index2 += 1
+                        elif year_jday1 < year_jday2:
+                            index1 += 1
+                        elif year_jday1 > year_jday2:
+                            index2 += 1
+                        else:
+                            print("Odd while loop behaviour")
+                            break
+            #
+            self.con.executemany("INSERT INTO jobs(filepath1,network1,station1,filepath2,network2,station2,date,components,status) VALUES (?,?,?,?,?,?,?,?,?)",rows)
+            self.con.commit()
+
+
+    
+    def find_all_data_and_sort(self,net,sta,comp,configmaxgap):
+        """
+        Docstring for find_all_data_and_sort
         
+        :param self: Description
+        :param net: Description
+        :param sta: Description
+        :param comp: Description
+        """
+        cmd = f"SELECT filepath,starttime FROM data WHERE network = '{net}' AND station = '{sta}' AND channel LIKE '%{comp}' AND maxgap <= {configmaxgap}"
+        data = np.array(self.cur.execute(cmd).fetchall())
+        if data.size != 0:
+            data[:,1] = date2yrjday(data[:,1])
+            inds = np.argsort(data[:,1])
+            data = data[inds,:]
+            return data
+        else:
+            return None
