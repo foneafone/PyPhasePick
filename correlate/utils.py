@@ -61,3 +61,11 @@ def find_comps_to_use(components_to_use):
     :param components_to_use: Description
     """
     
+def align_streams(stream1,stream2):
+    """
+    Docstring for align_streams
+    
+    :param stream1: Description
+    :param stream2: Description
+    """
+    

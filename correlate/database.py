@@ -118,7 +118,7 @@ class CorrelateLiteDB():
             self.cur.executemany("INSERT INTO correlateconfig VALUES(?,?)", config_values)
             self.con.commit()
         
-    def print_db(self,table):
+    def print_db(self,table,num_rows="all"):
         """
         Print a specific table from the database
         
@@ -129,6 +129,8 @@ class CorrelateLiteDB():
         cmd = f"SELECT * FROM {table}"
         values = self.cur.execute(cmd).fetchall()
         print(f"There are {len(values)} rows in the {table} table")
+        if num_rows != "all":
+            values = values[:num_rows]
         match table:
             case "data":
                 print("filepath station network channel starttime endtime maxgap")
@@ -149,8 +151,9 @@ class CorrelateLiteDB():
                     label,value = row
                     print(f"{label:13} {value}")
             case "jobs":
-                print("filepath1 network1 station1 filepath2 network2 station2 date components status")
-                print(" ")
+                print("filepath1                                                        network1    filepath2                                                        network2  date           status")
+                print("filepath1                                                             station1                                                                     station2       components")
+                print("---------------------------------------------------------------- ---- ------ ---------------------------------------------------------------- ---- ---- --------- ---- -- ")
                 for row in values:
                     filepath1,network1,station1,filepath2,network2,station2,date,components,status = row
                     print(f"{filepath1:64} {network1:4} {station1:6} {filepath2:64} {network2:4} {station2:6} {date:9} {components:4} {status:2}")
@@ -478,8 +481,8 @@ class CorrelateLiteDB():
                             if not jobid in existing_ids:
                                 row = [filepath1,net1,sta1,filepath2,net2,sta2,year_jday1,component_pair,"T"]
                                 rows.append(row)
-                                filepath1,network1,station1,filepath2,network2,station2,date,components,status = row
-                                print(f"{filepath1:64} {network1:4} {station1:6} {filepath2:64} {network2:4} {station2:6} {date:9} {components:4} {status:2}")
+                                # filepath1,network1,station1,filepath2,network2,station2,date,components,status = row
+                                # print(f"{filepath1:64} {network1:4} {station1:6} {filepath2:64} {network2:4} {station2:6} {date:9} {components:4} {status:2}")
                             index1 += 1
                             index2 += 1
                         elif year_jday1 < year_jday2:
@@ -513,3 +516,9 @@ class CorrelateLiteDB():
             return data
         else:
             return None
+
+    ########################################################################################
+    #                               Run Cross-correlations                                 #
+    ########################################################################################
+
+    
