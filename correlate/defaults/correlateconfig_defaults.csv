@@ -5,3 +5,4 @@ fileformat,MSEED
 components,"ZZ,NN,EE,EN,NE"
 maxgap,10
 remove_response,True
+sample_rate,20
