@@ -103,7 +103,7 @@ class CorrelateLiteDB():
     
     def build_correlate_config(self,input_file:pathlib.Path=None):
         """
-        Docstring for build_correlate_config
+        Builds the correlateconfig table from defaults
         
         :param self: Description
         :param input_file: Description
@@ -117,6 +117,14 @@ class CorrelateLiteDB():
             #
             self.cur.executemany("INSERT INTO correlateconfig VALUES(?,?)", config_values)
             self.con.commit()
+    
+    def update_correlate_config(self,**kwargs):
+        """
+        Updates values in the correlateconfig table according to the provided keyword arguments
+        """
+        for label, value in kwargs.items():
+            self.cur.execute("UPDATE correlateconfig SET value = ? WHERE label = ?",(value,label))
+        self.con.commit()
         
     def print_db(self,table,num_rows="all"):
         """
@@ -354,7 +362,7 @@ class CorrelateLiteDB():
     #                                    Station list                                      #
     ########################################################################################
     
-    def fill_station_db(self,station_csv=None):
+    def fill_station_db(self,station_csv=None,dataless=None,overwrite=False):
         """
         Fills the station table using a supplied csv file that contains the columns titled
         network, station, lat and lon. If no csv file is supplied then it finds all unique
@@ -363,11 +371,49 @@ class CorrelateLiteDB():
         :param self: Instance of database class
         :param station_csv: Path to pandas readable csv file that contains the columns 
             'network', 'station', 'lat', 'lon'
+        :param dataless: Path to a dataless readable as an obspy inventory object - will 
+            parse all stations within the inventory
+        :param overwrite: Will update any stations already in the table with the values of 
+            lat and lon given when passing a csv or dataless
         """
         # Get existing stations data
         existing_data = np.array(self.cur.execute("SELECT network,station FROM stations").fetchall(),dtype=str)
         existing_ids = make_station_ids(existing_data)
-        if station_csv is None:
+        if station_csv is not None:
+            # Fill from a station csv file
+            station_csv_df = pd.read_csv(station_csv)
+            ids = make_station_ids(np.array(station_csv_df[["network","station"]]))
+            stations = np.array(station_csv_df["station"])
+            networks = np.array(station_csv_df["network"])
+            lats = np.array(station_csv_df["lat"])
+            lons = np.array(station_csv_df["lon"])
+            for id,station,network,lat,lon in zip(ids,stations,networks,lats,lons):
+                if not id in existing_ids:
+                    # Insert new row into table
+                    self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,lat,lon))
+                elif overwrite:
+                    # Update station with new location if overwrite is True
+                    self.cur.execute("UPDATE stations SET lat = ?, lon = ? WHERE station = ? AND network = ?",(lat,lon,station,network))
+            self.con.commit()
+        elif dataless is not None:
+            # Fill from a dataless file readable by obspy
+            inv = obspy.read_inventory(dataless)
+            station_dict = {}
+            for net in inv:
+                for sta in net:
+                    id = f"{net.code}_{sta.code}"
+                    # print(key, sta.latitude, sta.longitude)
+                    if id not in station_dict:
+                        station_dict[id] = [sta.code,net.code,sta.latitude,sta.longitude]
+            for id in station_dict:
+                station,network,lat,lon = station_dict[id]
+                if not id in existing_ids:
+                    # Insert new row into table
+                    self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,lat,lon))
+                elif overwrite:
+                    # Update station with new location if overwrite is True
+                    self.cur.execute("UPDATE stations SET lat = ?, lon = ? WHERE station = ? AND network = ?",(lat,lon,station,network))
+        else:
             # Fill from the available stations in the data table
             stations_and_networks_from_data = np.array(self.cur.execute("SELECT network,station FROM data").fetchall(),dtype=str)
             ids = make_station_ids(stations_and_networks_from_data)
@@ -386,18 +432,6 @@ class CorrelateLiteDB():
                 if not id in existing_ids:
                     network,station = id.split("_")
                     self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,0,0))
-            self.con.commit()
-        else:
-            # Fill from a station csv file
-            station_csv_df = pd.read_csv(station_csv)
-            ids = make_station_ids(np.array(station_csv_df[["network","station"]]))
-            stations = np.array(station_csv_df["station"])
-            networks = np.array(station_csv_df["network"])
-            lats = np.array(station_csv_df["lat"])
-            lons = np.array(station_csv_df["lon"])
-            for id,station,network,lat,lon in zip(ids,stations,networks,lats,lons):
-                if not id in existing_ids:
-                    self.cur.execute("INSERT INTO stations(station,network,lat,lon) VALUES (?,?,?,?)",(station,network,lat,lon))
             self.con.commit()
 
     ########################################################################################
@@ -496,8 +530,6 @@ class CorrelateLiteDB():
             self.con.executemany("INSERT INTO jobs(filepath1,network1,station1,filepath2,network2,station2,date,components,status) VALUES (?,?,?,?,?,?,?,?,?)",rows)
             self.con.commit()
 
-
-    
     def find_all_data_and_sort(self,net,sta,comp,configmaxgap):
         """
         Docstring for find_all_data_and_sort
@@ -516,9 +548,18 @@ class CorrelateLiteDB():
             return data
         else:
             return None
+    
+    def reset_jobs(self):
+        """
+        Set all values of the status to 'To Do' (T)
+        """
+        self.cur.execute("UPDATE jobs SET status = 'T'")
+        self.con.commit()
+
 
     ########################################################################################
     #                               Run Cross-correlations                                 #
     ########################################################################################
 
-    
+    def run_crosscorrelation_jobs(self,reset=True):
+        
