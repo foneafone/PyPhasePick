@@ -1,19 +1,35 @@
-import numpy as np
-import xarray as xr
-import obspy
-import obspy.geodetics
+"""
+Native imports
+"""
 import time
-import matplotlib.pyplot as plt
 import os
 import glob
 import json
 import multiprocessing
+import pathlib
+import sys
+
+"""
+Library Imports
+"""
+import numpy as np
+import xarray as xr
+import obspy
+import obspy.geodetics
+import matplotlib.pyplot as plt
 import pandas as pd
 try:
     from tqdm import tqdm
 except ImportError:
     def tqdm(x):
         return x
+
+"""
+Module Imports
+"""
+# Append PyPhasePick to path to import
+dir_path = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(f"{str(dir_path)}/../..")
 
 from pyphasepick.frequencytimeanalisys import calc_and_save_ftan
 

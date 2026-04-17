@@ -1,14 +1,30 @@
-import numpy as np
-import xarray as xr
-import obspy
-import obspy.geodetics
+"""
+Native imports
+"""
 import time
-import matplotlib.pyplot as plt
 import os
 import glob
 import json
 import multiprocessing
+import sys
+import pathlib
+
+"""
+Library Imports
+"""
+import numpy as np
+import xarray as xr
+import obspy
+import obspy.geodetics
+import matplotlib.pyplot as plt
 import pandas as pd
+
+"""
+Module Imports
+"""
+# Append PyPhasePick to path to import
+dir_path = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(f"{str(dir_path)}/../..")
 
 from pyphasepick.picking import regional_dispersion, pick_regional
 
@@ -58,9 +74,10 @@ fSettings = (minT,maxT,dT,bandwidth,width_type,dv,minv,maxv,divalpha)
 
 c_std,T_std = 0.05,0.5
 
-outfile = f"/raid2/jwf39/askja/REGIONAL/regional_dispersion_v4_{vel_type}_{comp}.nc"
-regional_curve_file = f"/raid2/jwf39/askja/REGIONAL/regional_dispersion_v4_{vel_type}_{comp}.txt"
-out_plot = f"/raid2/jwf39/askja/notebooks/regionalImage/regional_dispersion_v4_{vel_type}_{comp}.png"
+vel_type = "phase"
+outfile = f"../example/regional_dispersion.nc"
+regional_curve_file = f"../example/regional_dispersion.txt"
+out_plot = f"../example/regional_dispersion.png"
 
 use_matricies = False
 use_outfile = False # Use previously computed grid to pick

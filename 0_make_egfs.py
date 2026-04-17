@@ -1,12 +1,28 @@
-import numpy as np
-import obspy
-import time
-import matplotlib.pyplot as plt
+"""
+Native imports
+"""
 import os
+import time
 import glob
 import json
+import pathlib
+import sys
+
+"""
+Library Imports
+"""
+import numpy as np
+import obspy
+import matplotlib.pyplot as plt
 import multiprocessing
 import pandas as pd
+
+"""
+Module Imports
+"""
+# Append PyPhasePick to path to import
+dir_path = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(f"{str(dir_path)}/../..")
 
 from pyphasepick.stackingandegf import egf_worker, make_stack_jobs
 
