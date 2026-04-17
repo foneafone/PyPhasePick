@@ -83,12 +83,15 @@ def preprocessing(stream1,stream2, network1,network2, station1,station2, comp1,c
     # Remove response
     print("Starting first response removal")
     response_comp_time = time.perf_counter()
+    # stream1 = stream1.remove_response(inventory=inv)
     stream1 = stream1.remove_response(inventory=inv,pre_filt=pre_filt)
     response_comp_time = time.perf_counter() - response_comp_time
     print(f"Remove response took {response_comp_time} s")
     print("Starting second response removal")
     response_comp_time = time.perf_counter()
+    # stream2 = stream2.remove_response(inventory=inv)
     stream2 = stream2.remove_response(inventory=inv,pre_filt=pre_filt)
     response_comp_time = time.perf_counter() - response_comp_time
     print(f"Remove response took {response_comp_time} s")
     #
+    return True

@@ -196,3 +196,8 @@ def align_streams(stream1,stream2,test=False):
             stream1 = stream1.trim(endtime=endtime)
             stream_to_trim.trim(endtime=stream1[0].stats.endtime)
             return stream1, stream_to_trim
+
+def npts2nfft(npts):
+
+    if npts & 0x1:
+        nfft = 2 * (npts + 1)
